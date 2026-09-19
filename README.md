@@ -6,13 +6,30 @@ cursor. Each one is a self-contained module. Drop one behind a website.
 ## Run
 
 ```bash
-python3 -m http.server 8787
+pnpm install
+pnpm dev
 ```
 
-Open <http://localhost:8787>. Keys `1`–`8` switch effects, `space` goes to the
+Open <http://localhost:3000>. Keys `1`–`8` switch effects, `space` goes to the
 next one, `h` hides the UI. Hold the mouse button in every effect for a second
 mode. The URL hash selects an effect (`#fluid`), and `?q=1024` raises the
 gravity well to 1,048,576 particles.
+
+`pnpm build` and `pnpm start` run the production build. `pnpm lint` and
+`pnpm typecheck` check the code.
+
+## Layout
+
+This is a Next.js app (App Router, TypeScript).
+
+| path | what it holds |
+|------|---------------|
+| `src/app/` | `layout.tsx`, `page.tsx` (server-rendered markup), `globals.css` |
+| `src/components/MouseFx.tsx` | client components: provider, background layer, hero text, HUD |
+| `src/lib/mousefx/controller.ts` | effect selection, frame loop, keys, hash, resize, teardown |
+| `src/lib/mousefx/pointer.ts` | shared pointer with autopilot |
+| `src/lib/mousefx/registry.ts` | the eight effect definitions, each loaded on demand |
+| `src/lib/mousefx/effects/` | the effect modules (plain JavaScript) |
 
 ## Effects
 
@@ -29,19 +46,33 @@ gravity well to 1,048,576 particles.
 
 ## Use in a site
 
-```html
-<div id="fx"></div>            <!-- position: fixed; inset: 0; z-index: 0; pointer-events: none -->
-<script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js" } }</script>
-<script type="module">
-  import { createPointer } from './js/pointer.js';
-  import fx from './js/effects/fluid.js';
-  const pointer = createPointer();
-  fx.init({ container: document.getElementById('fx'), pointer, width: innerWidth, height: innerHeight, dpr: devicePixelRatio, reduced: false });
-  let last = performance.now(), t = 0;
-  (function loop(now) { requestAnimationFrame(loop); const dt = Math.min(0.05, (now - last) / 1000); last = now; t += dt; pointer.update(dt, t); fx.update(dt, t); })(last);
-  addEventListener('resize', () => fx.resize(innerWidth, innerHeight, devicePixelRatio));
-</script>
+Copy `src/lib/mousefx/` into a project that has `three@0.160` installed. In a
+React client component:
+
+```tsx
+'use client';
+import { useEffect, useRef } from 'react';
+import { createPointer } from '@/lib/mousefx/pointer';
+import fx from '@/lib/mousefx/effects/fluid.js';
+
+export function Background() {
+  const ref = useRef<HTMLDivElement>(null);   // position: fixed; inset: 0; z-index: 0; pointer-events: none
+  useEffect(() => {
+    const pointer = createPointer();
+    fx.init({ container: ref.current, pointer, width: innerWidth, height: innerHeight, dpr: devicePixelRatio, reduced: false });
+    let last = performance.now(), t = 0, raf = 0;
+    const loop = (now: number) => { raf = requestAnimationFrame(loop); const dt = Math.min(0.05, (now - last) / 1000); last = now; t += dt; pointer.update(dt, t); fx.update(dt, t); };
+    raf = requestAnimationFrame(loop);
+    const onResize = () => fx.resize(innerWidth, innerHeight, devicePixelRatio);
+    addEventListener('resize', onResize);
+    return () => { cancelAnimationFrame(raf); removeEventListener('resize', onResize); pointer.dispose(); fx.dispose(); };
+  }, []);
+  return <div ref={ref} id="fx" aria-hidden="true" />;
+}
 ```
+
+The modules have no React dependency. Without React, do the same steps in a
+module script and call `pointer.dispose()` and `fx.dispose()` on teardown.
 
 Every effect implements `init({container, pointer, width, height, dpr, reduced})`,
 `update(dt, t)`, `resize(w, h, dpr)`, `dispose()` and exposes `count`.
@@ -74,8 +105,9 @@ for the WebGL effects, which is why it reads near zero there.
 | ascii | 55–60 | ~1 | 4,738 cells + 90 packets |
 | warp | 60 | 1.0 | 14,000 streaks |
 
-`window.mousefx` exposes `select(id)`, `next()`, `registry`, `pointer` and the
-`current` effect for debugging or embedding.
+`window.mousefx` exposes `select(id)`, `next()`, `registry`, `pointer`, the
+`current` effect and its `def` for debugging or embedding. It exists while the
+page is mounted.
 
 ## Research
 

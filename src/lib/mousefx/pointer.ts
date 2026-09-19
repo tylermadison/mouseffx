@@ -1,9 +1,12 @@
+import type { Pointer } from './types';
+
 // Pointer tracker. Gives every effect the same view of the mouse:
 // position (CSS px), smoothed position, velocity (px/s), button state,
 // and an "auto pilot" that drifts the pointer when the user is idle so the
 // background never freezes.
-export function createPointer() {
-  const p = {
+export function createPointer(): Pointer {
+  const listeners = new AbortController();
+  const p: Pointer = {
     x: innerWidth / 2, y: innerHeight / 2,     // effective pointer (real or autopilot)
     sx: innerWidth / 2, sy: innerHeight / 2,   // smoothed (low-pass) pointer
     vx: 0, vy: 0,                              // velocity px/s (smoothed)
@@ -14,22 +17,25 @@ export function createPointer() {
     lastMove: -1e9,
     downTime: 0,
     t: 0,
+    update,
+    dispose: () => listeners.abort(),
   };
   let lx = p.x, ly = p.y;
 
-  const onMove = (e) => {
+  const onMove = (e: PointerEvent) => {
     p.rx = e.clientX; p.ry = e.clientY;
     p.lastMove = performance.now();
   };
-  addEventListener('pointermove', onMove, { passive: true });
-  addEventListener('pointerdown', (e) => { onMove(e); p.down = true; p.downTime = performance.now(); }, { passive: true });
-  addEventListener('pointerup', () => { p.down = false; }, { passive: true });
-  addEventListener('pointercancel', () => { p.down = false; }, { passive: true });
-  addEventListener('blur', () => { p.down = false; });
+  const opts = { passive: true, signal: listeners.signal };
+  addEventListener('pointermove', onMove, opts);
+  addEventListener('pointerdown', (e) => { onMove(e); p.down = true; p.downTime = performance.now(); }, opts);
+  addEventListener('pointerup', () => { p.down = false; }, opts);
+  addEventListener('pointercancel', () => { p.down = false; }, opts);
+  addEventListener('blur', () => { p.down = false; }, { signal: listeners.signal });
 
   const IDLE_MS = 2500;
 
-  p.update = (dt, t) => {
+  function update(dt: number, t: number) {
     p.t = t;
     const now = performance.now();
     const since = now - p.lastMove;
@@ -58,6 +64,6 @@ export function createPointer() {
     // smoothed position
     const s = 1 - Math.exp(-dt * 10);
     p.sx += (p.x - p.sx) * s; p.sy += (p.y - p.sy) * s;
-  };
+  }
   return p;
 }

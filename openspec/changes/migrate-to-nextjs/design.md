@@ -67,13 +67,15 @@ The frame loop stays out of React. React state changes only on selection and two
 
 The hero title and description change with the effect, and the `h` toggle puts the `hidden` class on `#site`. But `#site` is static markup that the server renders. Decision: `MouseFx.tsx` exports five small client components that share one React context:
 
-- `MouseFxProvider` owns the state (`activeDef`, `stats`, `error`, `uiHidden`) and makes the controller in `useEffect`. `page.tsx` wraps its content in it. Server-rendered children pass through it unchanged.
-- `FxLayer` renders `<div id="fx">` and gives its ref to the provider.
+- `MouseFxProvider` owns the state (`activeDef`, `stats`, `error`, `uiHidden`) and supplies a ref callback that makes the controller. `page.tsx` wraps its content in it. Server-rendered children pass through it unchanged.
+- `FxLayer` renders `<div id="fx">` with that ref callback. The callback makes the controller for the node and returns `controller.destroy` as its cleanup (React 19 ref cleanup). The controller lifetime is thus the lifetime of the container node.
 - `Site` renders `<main id="site">` with the `hidden` class from the context. Its children (brand, nav, kicker, hint) stay server-rendered.
 - `HeroText` renders the `<h1>` and the description (or `error: <message>`) from the context.
 - `Hud` renders `<aside id="hud">` with the list, the statistics, and the command line.
 
-The initial state is the `gravity-well` definition, so the server HTML has `GRAVITY WELL` and there is no hydration mismatch. The hash is read in `useEffect`, after hydration. `registry.ts` has no browser API at module scope, so it is safe to import during the server render.
+The initial state is the `gravity-well` definition, so the server HTML has `GRAVITY WELL` and there is no hydration mismatch. The controller reads the hash after hydration. `registry.ts` has no browser API at module scope, so it is safe to import during the server render.
+
+*Alternative (tried first, rejected):* make the controller in a `useEffect` of the provider with a ref object for the container. During implementation, a Fast Refresh replaced the `#fx` node but did not run the provider effect again. The controller then drew into a detached node and the background was blank. A ref callback binds the two lifetimes, so this condition cannot occur.
 
 *Alternative:* let the controller write `textContent` by id as `main.js` does. Rejected: React can overwrite DOM text that it does not own, and the approach hides state from the component tree.
 
@@ -97,9 +99,9 @@ The vendored file is r160. Later three.js releases changed colour management def
 
 The effects are module singletons. `init` → `dispose` → `init` on the same object is already the path that the current page uses when a visitor goes away from an effect and comes back, so it is a proven sequence.
 
-### 8. Browser APIs only in `useEffect`
+### 8. Browser APIs only after mount
 
-`createPointer()`, `matchMedia`, `innerWidth`, and `location` run only in the controller, and `MouseFx` makes the controller in `useEffect`. No `typeof window` guards are necessary, and no `next/dynamic` with `ssr: false` is necessary. `?q=` stays a direct `location.search` read in `gravityWell.js`. `useSearchParams` is not used, because it forces a Suspense boundary and the value is necessary only in the effect.
+`createPointer()`, `matchMedia`, `innerWidth`, and `location` run only in the controller, and `MouseFx` makes the controller in a ref callback, which runs only in the browser. No `typeof window` guards are necessary, and no `next/dynamic` with `ssr: false` is necessary. `?q=` stays a direct `location.search` read in `gravityWell.js`. `useSearchParams` is not used, because it forces a Suspense boundary and the value is necessary only in the effect.
 
 ### 9. URL hash stays `location.hash`
 
