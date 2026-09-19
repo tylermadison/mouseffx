@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MOUSEFX // physics backgrounds</title>
+<link rel="stylesheet" href="css/style.css">
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js" } }
+</script>
+</head>
+<body>
+<!-- Background layer. Effects mount their canvas here. pointer-events: none. -->
+<div id="fx" aria-hidden="true"></div>
+
+<!-- Sample site content that sits above the background -->
+<main id="site">
+  <header class="top">
+    <span class="brand">MOUSEFX<span class="cursor">_</span></span>
+    <nav>
+      <a href="#" class="lnk">docs</a>
+      <a href="#" class="lnk">lab</a>
+      <a href="#" class="lnk">about</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <p class="kicker">// physics-based mouse followers</p>
+    <h1 id="fx-title">GRAVITY WELL</h1>
+    <p class="sub" id="fx-desc">262,144 GPU particles fall into your cursor.</p>
+    <p class="hint">move the mouse &nbsp;·&nbsp; hold to disturb &nbsp;·&nbsp; keys <kbd>1</kbd>–<kbd>8</kbd> switch &nbsp;·&nbsp; <kbd>space</kbd> next &nbsp;·&nbsp; <kbd>h</kbd> hide ui</p>
+  </section>
+</main>
+
+<!-- Terminal HUD -->
+<aside id="hud">
+  <div class="hud-head">
+    <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    <span class="hud-title">fx@localhost:~</span>
+  </div>
+  <ol id="fx-list"></ol>
+  <div class="hud-stats">
+    <span>fps <b id="fps">--</b></span>
+    <span>ms <b id="ms">--</b></span>
+    <span>tech <b id="tech">--</b></span>
+    <span>n <b id="count">--</b></span>
+  </div>
+  <div class="hud-foot">$ <span id="hud-cmd">run gravity-well</span><span class="cursor">▌</span></div>
+</aside>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
