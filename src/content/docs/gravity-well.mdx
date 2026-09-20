@@ -1,0 +1,214 @@
+<Section id="overview">
+
+A swarm of small points of light turns counter-clockwise around the cursor. Points far from the cursor fall in, and points near it get a push to the side. A noise field bends the paths, so the disc looks like smoke. Slow points are deep blue. Fast points go through cyan and magenta to white. Each point leaves a short trail.
+
+The technology is three.js with GPGPU. The CPU does not hold the particle state. Position and velocity are in textures of N × N texels, one texel for each particle. Two fragment shaders calculate the next state, and a vertex shader reads the position texture to draw each point. A shader cannot read and write one texture at the same time, so each quantity has two render targets that change roles on each frame. This is the ping-pong method.
+
+The element count in the statistics is `this.count = N * N`. N is 512 on a desktop viewport, which gives 262,144 particles. N is 256 (65,536 particles) when the viewport is narrower than 800 px and the device has a touch screen. The URL parameter `?q=` sets N directly: `?q=1024` gives 1,048,576 particles.
+
+</Section>
+
+<Section id="interaction">
+
+All lengths in the simulation are in world units. One unit is half of the viewport height. The vertical range is −1 to 1, and the horizontal range is −aspect to aspect.
+
+- **Move.** The well is at the smoothed pointer position (`pointer.sx`, `pointer.sy`), so it follows the cursor with a short delay and does not jump.
+- **Move fast.** The pointer velocity (`pointer.vx`, `pointer.vy`) pushes the particles near the cursor in the direction of the movement. The weight of the push is `exp(−10 · r²)`, which is 0.37 at a distance of 0.32 units. The module does not read `pointer.speed`.
+- **Hold the button.** A second force pushes all particles away from the cursor. The pull stays on, but the push is at least 3.6 times as strong at all distances, so the net force points out. `uDown` moves toward its target by the fraction `min(1, 12 · dt)` on each frame, which takes approximately 0.1 s. When you release the button, the swarm falls back in.
+- **Press edge.** No reaction. The module reads only `pointer.down`.
+- **Idle.** After 2.5 s with no input, the shared pointer goes into autopilot and moves on a slow path. The well moves with it.
+
+`update` reads the `reduced` flag. With reduced motion, the simulation time step is multiplied by 0.5, so all particles move at half speed. The trail decay and the noise time use the real time.
+
+The `?q=` value goes through `parseInt`. A value of 0, or a value that is not a number, gives the default. The module applies no upper limit.
+
+</Section>
+
+<Section id="model">
+
+### State
+
+The position texture has `xyz` = position and `w` = life. The velocity texture has `xyz` = velocity, and its `w` channel is not used. The camera is orthographic, so `z` does not move a point on the screen. It changes only the point size.
+
+### Forces
+
+For each particle, `VEL_FS` computes the vector to the well `d = uMouse − pos`, the distance `r = |d| + 0.0001`, and the unit direction `n = d / r`. The acceleration has three parts:
+
+<Formula caption="Units are world units per second squared. h is a random number from 0 to 1 that is constant for each particle.">{`grav = n · 0.28 / (r² + 0.015)          limited to |grav| ≤ 14
+tang = (n × ẑ) · 0.55 / (r + 0.12)
+c    = curl(1.7 · pos + (0, 0, 0.12 · uTime)) · (0.55 + 0.4 · h)
+
+vel += (grav + tang + c) · uDt`}</Formula>
+
+- `grav` is an inverse-square pull. The term 0.015 is the softening ε² (ε is approximately 0.12 units). Without it, the pull goes to infinity at the centre. With it, the largest value is 0.28 / 0.015 = 18.7, and the limit of 14 cuts that again for `r` less than 0.07 units.
+- `tang` is the swirl. `n × ẑ` is `(n.y, −n.x, 0)`, at a right angle to the pull, which is counter-clockwise on the screen. The swirl falls with `1 / r`, slower than the pull. Its largest value is 0.55 / 0.12 = 4.6.
+- `c` is the turbulence. The factor with `h` gives each particle its own strength, so two particles at one position do not stay together.
+
+Then the shader adds the cursor drag and the repulsor, and applies the damping and the speed limit:
+
+<Formula caption="uMouseVel is the pointer velocity in units per second. uDown is 0 to 1.">{`vel += uMouseVel · exp(−10 · r²) · 2.5 · uDt
+vel −= n · uDown · 6 / (6 · r² + 0.08) · uDt
+vel  = vel · exp(−1.1 · uDt)
+if |vel| > 2.6 :  vel = vel · 2.6 / |vel|`}</Formula>
+
+The cursor drag is a push, not a real drag: it does not compare the cursor velocity with the particle velocity. The damping is an exponential, so it does not depend on the frame rate.
+
+The swirl and the damping together set the size of the disc. With only these two, the tangential speed settles at `0.55 / (1.1 · (r + 0.12))`. A circular orbit needs the speed `√(r · |grav|)`. The two are equal near `r` = 0.65 units (an estimate). Nearer than that, particles get more speed than the orbit needs and move out. Farther away, they fall in.
+
+### Curl noise
+
+`NOISE` contains a 3D simplex noise function `snoise`. `snoise3` calls it three times with different offsets to make a vector field `F`. `curl` takes central differences of `F` with a step of `e = 0.05`:
+
+<Formula caption="Each partial derivative is a difference of two snoise3 samples. The shader divides by 2e only in the length.">{`curl F = ( ∂F.z/∂y − ∂F.y/∂z,
+           ∂F.x/∂z − ∂F.z/∂x,
+           ∂F.y/∂x − ∂F.x/∂y )
+
+result = normalize(curl F) · min(|curl F|, 1.5)`}</Formula>
+
+The curl of a field has zero divergence. Plain noise used as a force field has sinks, and particles collect in them and leave holes. A field with zero divergence moves particles around and does not compress them. The third noise coordinate moves with time, so the field changes slowly.
+
+### Integration and respawn
+
+`POS_FS` runs after `VEL_FS` and reads the new velocity: `pos = pos + vel · uDt`. This order is semi-implicit Euler, which keeps orbits stable better than the explicit order.
+
+Life decreases at a rate of `0.06 + 0.12 · h` per second, so a particle lives 5.6 to 16.7 s. A particle respawns when its life is 0 or less, or when it is out of bounds: `|x|` greater than 1.25 · aspect, `|y|` greater than 1.25, or `|z|` greater than 1.
+
+- With a probability of 0.55, the new position is on a ring around the cursor, at a radius of 0.25 to 1.0 units, with `z` in ±0.15.
+- If not, it is a random position on the screen, with `z` from 0.02 to 0.2.
+
+The shader sets the life of a new particle to 1.5. A value greater than 1 is a flag. On the next frame, `VEL_FS` sees `P.w > 1.0`, replaces the velocity with a tangential drift of 0.15 to 0.45 units/s, and does nothing else. `POS_FS` then limits the life to 1, and the flag is gone. Without this flag, a new particle keeps the velocity of the dead one.
+
+</Section>
+
+<Section id="pipeline">
+
+<Pipeline>
+  <Step title="Set the uniforms" reads="pointer.sx, sy, vx, vy, down" writes="uMouse, uMouseVel, uDown, uDt, uTime">
+    The pointer position and velocity are converted from CSS px to world units. `uDt` is `min(dt, 1/30)`, multiplied by 0.5 with reduced motion. All shaders share the same uniform objects.
+  </Step>
+  <Step title="Velocity pass" reads="pos[ping], vel[ping]" writes="vel[1 − ping]">
+    A full-screen quad with `VEL_FS` is drawn into the N × N velocity target. Each fragment is one particle.
+  </Step>
+  <Step title="Position pass" reads="pos[ping], vel[1 − ping]" writes="pos[1 − ping]">
+    The same quad with `POS_FS`. It reads the velocity that step 2 wrote. Then `ping` changes to the other index.
+  </Step>
+  <Step title="Fade the trails" reads="trail[tping]" writes="trail[1 − tping]">
+    `FADE_FS` copies the old trail image, multiplied by `0.885^(60 · dt)`, and subtracts 0.0015 from each channel.
+  </Step>
+  <Step title="Draw the points" reads="pos[1 − ping], vel[1 − ping]" writes="trail[1 − tping]">
+    One draw call with N × N point sprites and additive blend, on top of the faded image. Then `tping` changes to the other index.
+  </Step>
+  <Step title="Copy to the screen" reads="trail[1 − tping]" writes="canvas">
+    `COPY_FS` applies a tone curve, `1 − exp(−1.45 · c)`, then a power of 0.9.
+  </Step>
+</Pipeline>
+
+One frame is five draw calls. The CPU work does not depend on N.
+
+</Section>
+
+<Section id="code">
+
+### Seeding
+
+`INIT_FS` does not make the start state. It is a plain copy. JavaScript fills a `Float32Array` with random positions across the screen, `z` in ±0.2, and a random life from 0 to 1. The copy shader then draws this texture into the two position targets. The random life is important: if all particles start with life 1, no particle respawns for the first 5.6 s, and then a wave of respawns comes. The velocity targets are only cleared, so all particles start at rest.
+
+<Excerpt file="effects/gravityWell.js" region="seed" lang="js" page="gravity-well" />
+
+### The velocity pass
+
+Read this as a list of forces. The first block is the branch for new particles, which ends with `return`. The damping comes after all forces.
+
+<Excerpt file="effects/gravityWell.js" region="velocity-pass" lang="glsl" page="gravity-well" />
+
+### Curl noise
+
+Six calls of `snoise3` are 18 calls of `snoise` for each particle on each frame. This is the most expensive part of the simulation. The last line separates the direction from the length, so that the limit of 1.5 changes only the length.
+
+<Excerpt file="effects/gravityWell.js" region="curl-noise" lang="glsl" page="gravity-well" />
+
+### Integration and respawn
+
+A shader has no random generator with state, so all random numbers come from `hash12` with the texel coordinate and `uTime` as input. `r2` selects the branch and also gives `z` in the second branch. This is the reason for the `z` range of 0.02 to 0.2 there.
+
+<Excerpt file="effects/gravityWell.js" region="position-respawn" lang="glsl" page="gravity-well" />
+
+### The point sprite
+
+The geometry has a `position` attribute that contains only zeros, so that three.js knows the number of vertices. The real position comes from the texture at `ref`, the centre of the texel of this particle. The point size is `uSize` multiplied by a speed factor (0.7 to 1.3) and a depth factor (0.72 to 0.88 for `z` in ±0.2). `uSize` is `2.0 · min(dpr, 1.5)`, thus 3 px of the drawing buffer on a high-density display, and 1.6 times that when N is 256 or less.
+
+<Excerpt file="effects/gravityWell.js" region="point-sprite" lang="glsl" page="gravity-well" />
+
+`PT_FS` makes the sprite round with the brightness `(1 − d)²`, where `d` goes from 0 at the centre to 1 at the edge. The colour ramp uses `smoothstep(0.0, 2.4, vSpeed)`. The life gives a fade: 0 at life 1.0, full at life 0.9, and back to 0 in the last 0.08. A new particle is thus invisible on its first frames and does not pop in. The output is multiplied by 0.42 and has alpha 1, so the additive blend of three.js (`SRC_ALPHA`, `ONE`) adds the colour to the trail buffer.
+
+### One frame
+
+The first lines map the pointer: `x` is multiplied by the aspect ratio, and `y` changes sign because CSS `y` points down. Look at which index each pass reads and writes. `renderer.autoClear` is `false`, so the point draw call goes on top of the faded image and does not erase it.
+
+<Excerpt file="effects/gravityWell.js" region="update-frame" lang="js" page="gravity-well" />
+
+</Section>
+
+<Section id="constants">
+
+<ParamTable>
+  <Param name="grid size" literal="(mobile ? 256 : 512)" controls="N, the side of the state textures in texels. The particle count is N × N." why="The count increases with the square of N. 512 fills a desktop screen with no visible gaps in the disc. 256 has a quarter of the GPU work for phones, and the point size goes up by 1.6 to compensate for the lower density." />
+  <Param name="pull" literal="0.28 / (r*r + 0.015)" controls="Strength of the pull (0.28) and the softening ε² (0.015), in world units." why="A larger strength makes particles hit the speed limit before they get near the cursor. A smaller softening makes a very high acceleration near the centre, and one time step then throws particles far out." />
+  <Param name="pull limit" literal="if (gl > 14.0) grav *= 14.0 / gl;" controls="Largest pull acceleration, in units/s²." why="With the longest time step of 1/30 s, a pull of 14 changes the velocity by 0.47 units/s in one step, which is well below the speed limit. A higher limit makes the centre unstable at low frame rates." />
+  <Param name="swirl" literal="(0.55 / (r + 0.12))" controls="Tangential acceleration and its softening length." why="With no swirl, particles fall straight in and oscillate through the centre. With a much larger swirl, all particles move out to the screen edge. The value 0.12 prevents an infinite value at the centre." />
+  <Param name="turbulence" literal="curl(pos * 1.7 + vec3(0.0, 0.0, uTime * 0.12)) * (0.55 + 0.4*h)" controls="Spatial frequency of the noise (1.7), its speed of change (0.12), and its strength for each particle (0.55 to 0.95)." why="A frequency of 1.7 gives vortices of approximately 0.6 units, smaller than the disc and larger than a trail. The strength is of the same order as the pull at the disc radius, but its direction changes in space and time, so it averages out while the pull and the swirl add up. A larger strength dissolves the disc. A strength near zero gives perfect rings that look mechanical." />
+  <Param name="cursor drag" literal="exp(-r*r*10.0) * uDt * 2.5" controls="Radius (the factor 10 in the exponent) and gain (2.5) of the push from the cursor velocity." why="A smaller factor in the exponent moves the full swarm with each cursor movement. A larger gain sends particles to the speed limit on each fast movement." />
+  <Param name="repulsor" literal="uDown * 6.0 / (r*r*6.0 + 0.08)" controls="The outward acceleration while the button is held. The largest value is 6 / 0.08 = 75 units/s² at the centre." why="It must be larger than the pull at all distances, because the pull is not set to zero. At large distances it is 1 / r², against 0.28 / r² for the pull." />
+  <Param name="damping" literal="exp(-uDt * 1.1)" controls="Velocity loss, as a rate of 1.1 per second." why="The swirl adds energy on each frame. With less damping, the speeds increase to the limit and all particles become white. With more damping, particles cannot hold an orbit and fall into the centre." />
+  <Param name="speed limit" literal="if (sp > 2.6) vel *= 2.6 / sp;" controls="Largest particle speed, in units/s." why="It is a little above the 2.4 at which the colour ramp is white, so the limit does not change the colours. It also limits one step to 0.087 units at the longest time step, so a particle cannot jump across the well." />
+  <Param name="life" literal="uDt * (0.06 + 0.12*h)" controls="Life loss per second. A particle lives 5.6 to 16.7 s." why="Respawn moves particles from the dense centre back to the full screen. With a longer life, the screen outside the disc becomes empty. With a shorter life, particles die before they complete an orbit." />
+  <Param name="trail decay" literal="Math.pow(0.885, dt * 60)" controls="Part of the trail image that stays after 1/60 s." why="Lower values show only points. Higher values fill the disc with solid light, because a quarter of a million additive points write into the buffer on each frame." />
+  <Param name="point brightness" literal="fade * 0.42" controls="Brightness of one point sprite before the additive blend." why="Many sprites overlap in the disc. A value of 1 makes the centre clip to white immediately. A much lower value makes single particles outside the disc invisible." />
+</ParamTable>
+
+</Section>
+
+<Section id="performance">
+
+Almost all the work is on the GPU. The CPU sets a small number of uniforms and sends five draw calls, and that cost does not depend on the particle count.
+
+These costs scale with the particle count (N²):
+
+- The velocity pass, with 18 evaluations of simplex noise for each particle. At N = 512 this is 4.7 million evaluations for each frame.
+- The point draw call: N² vertices with two texture reads each, and N² sprites with additive blend that overlap in the dense centre.
+- Memory: four state textures of N × N RGBA. With 32-bit float and N = 512, each texture is 4 MiB.
+
+The fade pass and the copy pass scale with the pixel count, as do the two trail textures.
+
+Limits and fallbacks that the module applies:
+
+- The device pixel ratio is limited to 1.5, for the canvas and for the trail textures.
+- N is 256 on a touch device with a viewport narrower than 800 px.
+- The time step is limited to 1/30 s, so a slow frame cannot throw particles out of their orbits.
+- No antialiasing, an opaque canvas, and no depth or stencil buffer on the render targets. The state textures use the nearest filter, because a mix of two particles has no meaning.
+- If the context is WebGL2 and has `EXT_color_buffer_float`, the state textures are 32-bit float and the trail textures are half float. If not, the state textures are half float and the trail textures are unsigned byte. Half float has a position step of approximately 0.001 units near 1.0, so slow particles move in steps. An unsigned-byte trail clips the additive sum at 1.0 before the tone curve, so the centre of the disc cannot reach white. The subtraction of 0.0015 in `FADE_FS` helps in that mode: with only a multiplication, rounding keeps a value of 4/255 constant, and old trails never go dark.
+- A resize makes new trail textures, so the trails start from black. The particle state stays.
+
+<Measured
+  conditions="M-series Mac, Chromium, device pixel ratio 2 (the module uses 1.5). ms is the CPU time of update() only. GPU time is not included, which is the reason that the value is near zero."
+  head={['viewport', 'build', 'fps', 'update ms', 'particles']}
+  rows={[
+    ['1024 × 768', 'static page (before Next.js)', '60', '0.1', '262,144'],
+    ['1710 × 930', 'Next.js development', '60', '0.3', '262,144'],
+    ['1710 × 930', 'Next.js production', '60', '0.4', '262,144'],
+  ]}
+/>
+
+With `?q=1024`, 1,048,576 particles rendered correctly at 1710 × 930 on the same machine. The frame rate was not recorded for that run.
+
+</Section>
+
+<Section id="references">
+
+- Robert Bridson, Jim Hourihan, Marcus Nordenstam, [Curl-Noise for Procedural Fluid Flow](https://www.cs.ubc.ca/~rbridson/docs/bridson-siggraph2007-curlnoise.pdf) (SIGGRAPH 2007). The source of the turbulence method.
+- Codrops, [Crafting a Dreamy Particle Effect with Three.js and GPGPU](https://tympanus.net/codrops/2024/12/19/crafting-a-dreamy-particle-effect-with-three-js-and-gpgpu/). Particle state in textures and the ping-pong update, step by step.
+- aadebdeb, [gpgpu-particles-with-curl-noise.html](https://github.com/aadebdeb/study-three.js/blob/master/gpgpu-particles-with-curl-noise.html). A small, complete three.js example with the same structure.
+- Stefan Gustavson and Ian McEwan, [webgl-noise](https://github.com/stegu/webgl-noise). The origin of the `snoise` function in `NOISE`.
+- three.js docs, [WebGLRenderTarget](https://threejs.org/docs/pages/WebGLRenderTarget.html). The `type`, `format`, filter, and `depthBuffer` options that the module uses.
+
+</Section>

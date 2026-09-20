@@ -1,0 +1,219 @@
+<Section id="overview">
+
+The screen is a grid of green terminal glyphs. Each glyph is one of `-`, `/`, `|`, `\`, and it shows the direction of a flow at that cell. The flow is a slow noise pattern. The cursor adds a vortex to it, so the glyphs near the cursor make rings. Amber and white hexadecimal digits move along the flow. These are the trails of the packets. A small amber text next to the cursor shows its position and the mode.
+
+The effect is plain canvas 2D. The CPU computes one field vector for each cell on each frame. The grid loop does not draw text. All glyphs come from an atlas that the module draws one time in `init`, and each cell is one `drawImage` call.
+
+The cell size comes from the font size `fs`. `fs` is 14 px, or 12 px when the viewport is narrower than 800 px at `init`. A cell is `round(0.7 · fs)` wide and `round(1.2 · fs)` high, which is 10 × 17 px (8 × 14 px for the small font). `resize` computes `cols = ceil(width / cw)` and `rows = ceil(height / ch)`.
+
+The element count in the statistics (`this.count`) is `cols × rows`, the number of cells. A 1024 × 768 viewport gives 103 × 46 = 4,738 cells. A 1710 × 930 viewport gives 171 × 55 = 9,405 cells. The packets (90, or 40 on a narrow viewport) are not part of the count.
+
+</Section>
+
+<Section id="interaction">
+
+- **Move.** The vortex centre is the smoothed pointer position (`pointer.sx`, `pointer.sy`), which follows the cursor with a time constant of 0.1 s. The rings thus move behind a fast cursor and then catch up. The text readout uses the raw position (`pointer.x`, `pointer.y`).
+- **Move fast.** The pointer velocity (`pointer.vx`, `pointer.vy`, in px/s) is added to the field as a wind, with the same falloff as the vortex. At 1,000 px/s the wind is 2.5 field units, which is more than the vortex (1.7). A fast stroke thus turns the glyphs along the stroke, pushes the packets with it, and makes cells with the glyphs `+ * # @`.
+- **Hold the button.** The cursor becomes a sink. The radial term changes from +0.7 (a weak source that pushes away from the cursor) to −1.2 (inward), and the vortex strength is multiplied by 1.8. Packets move in a spiral to the cursor and stay there. The readout changes from `VORTEX` to `SINK`. The module reads only the level of `pointer.down`. The press edge has no function of its own.
+- **Idle.** After 2.5 s with no input, the shared pointer goes into autopilot and moves on a slow path. The vortex follows it.
+
+`update` reads the `reduced` flag and multiplies the time step `sdt` by 0.5. The packets then move at half speed, and the lit cells cool at half speed. The field does not become slower: the noise scroll, the field rotation, and the `+ * # @` animation use the clock `t` directly.
+
+There is no URL parameter. The narrow-viewport branch (`width < 800`) sets the font size to 12 px and the packet count to 40. The module evaluates it in `init` only, so a later resize does not change these two values.
+
+</Section>
+
+<Section id="model">
+
+### Value noise
+
+`vnoise(x, y, seed)` gives a smooth value from 0 to 1. An integer hash gives a pseudo-random 16-bit value for each point of the integer lattice. Between the lattice points, the function interpolates the four corner values `a`, `b`, `c`, `d`:
+
+<Formula caption="xf and yf are the fractional parts of x and y. u and v are smoothstep weights. The last line is bilinear interpolation, multiplied out.">{`u = xf² · (3 − 2 · xf)
+v = yf² · (3 − 2 · yf)
+vnoise = a + (b − a) · u + (c − a) · v + (a − b − c + d) · u · v`}</Formula>
+
+The smoothstep weights have zero slope at the lattice points. Without them, the interpolation is linear, and the lattice lines show as creases in the flow.
+
+### The field
+
+The field is a sum of four terms. Its unit is abstract: one unit moves a packet at 160 px/s. `x`, `y` is the cell centre in px and `t` is the time in seconds.
+
+<Formula caption="s = 0.0028 lattice cells for each px. One lattice cell of n1 is 357 px. One lattice cell of n2 is 170 px.">{`n1  = vnoise(s · x,            s · y + 0.08 · t,       1)
+n2  = vnoise(2.1 · s · x + 40, 2.1 · s · y − 0.05 · t, 2)
+ang = (0.7 · n1 + 0.3 · n2) · 4π + 0.1 · t
+mag = 0.35 + 0.5 · n2
+V_noise = mag · (cos ang, sin ang)`}</Formula>
+
+The noise value becomes an angle, not a vector. The mix of the two layers, from 0 to 1, maps to 0 to 4π, which is two full turns. The time has three functions. `n1` scrolls along `y` at 0.08 lattice cells for each second (approximately 29 px/s). `n2` scrolls in the opposite direction at 0.05 (approximately 9 px/s). The term `0.1 · t` turns all vectors together at 0.1 rad/s. `n2` also sets the magnitude, from 0.35 to 0.85.
+
+The cursor terms use the distance from the smoothed pointer:
+
+<Formula caption="A = 1.7 and rad = +0.7 with no button. A = 3.06 and rad = −1.2 while the button is held. The 1 in r prevents a division by zero at the centre.">{`(dx, dy) = (x − sx, y − sy)
+r    = √(dx² + dy²) + 1
+fall = exp(−(dx² + dy²) / (2 · 190²))
+
+V_vortex = A · fall · (−dy, dx) / r
+V_radial = rad · fall · (dx, dy) / r
+V_wind   = 0.0025 · fall · (p.vx, p.vy)`}</Formula>
+
+- `(−dy, dx) / r` is the tangent direction. On a canvas, `y` points down, so this rotation is clockwise on the screen.
+- `fall` is a Gaussian with σ = 190 px: 61% at 190 px and 14% at 380 px. A physical vortex such as the Rankine vortex decreases with 1/r. The Gaussian goes to zero faster, so the noise field far from the cursor stays as it is.
+- Because `r` is the distance plus 1, the vortex and radial terms are zero at the centre and rise to almost the full value in a few px. Their sum is largest approximately 33 px from the cursor: 1.76 units with no button, 3.14 units with the button.
+
+The module does not smooth the field between frames: `fx` and `fy` are fully overwritten on each frame. The only smoothing in time comes from the pointer module (smoothed position and smoothed velocity).
+
+### From vector to glyph
+
+A line glyph has no head, so a vector and its opposite get the same glyph. The code folds the angle into the range 0 to π and divides it into four buckets of 45° (π/4):
+
+<Formula caption="The buckets are centred on 0°, 45°, 90° and 135°. An angle near π rounds to 4, and mod 4 makes it 0.">{`a = atan2(vy, vx)          if a is negative: a = a + π
+b = round(a / (π / 4)) mod 4
+b: 0 → -    1 → \\    2 → |    3 → /`}</Formula>
+
+`DIR` is the string `-/|\`, so bucket 1 would be `/`. But on a canvas `y` points down. A vector with positive `vx` and `vy` points down and to the right, which is the shape of `\`. The code thus exchanges indices 1 and 3.
+
+The magnitude and the heat of the cell select the glyph set, the tint row of `TINTS`, and the alpha:
+
+- Heat more than 0.05: the hexadecimal digit of the packet. White (row 4) while the heat is more than 0.8, then amber (row 3). Alpha is `0.1 + 0.6 · heat`.
+- Magnitude less than 0.3: the dot `·` in dark green (row 0), alpha 0.35. The noise term is never less than 0.35, so a dot shows only where the cursor terms cancel the noise.
+- Magnitude 0.3 to 1.6: a direction glyph in neon green (row 1). Alpha is `0.04 + 0.28 · mag`. For the noise alone this is 0.14 to 0.28, so the background is dim.
+- Magnitude 1.6 to 2.6: a direction glyph in pale green (row 2), same alpha formula, up to 0.77.
+- Magnitude more than 2.6: one of the `HOT` glyphs `+ * # @` in pale green. The direction is not shown. The index is `(7 · c + 13 · r + floor(8 · t)) mod 4`, so each cell steps through the four glyphs 8 times for each second, and adjacent cells are at different steps. Alpha is `0.18 · mag`, limited to 0.55. The limit is lower than for a line glyph because `#` and `@` light more pixels.
+
+### Packets
+
+A packet is a position and a hexadecimal digit. It has no velocity of its own. On each frame it reads the field of the cell that it is in and moves:
+
+<Formula caption="k is the index of the cell that contains the packet. There is no interpolation between cells.">{`px = px + fx[k] · 160 · sdt
+py = py + fy[k] · 160 · sdt
+heat[k] = 1`}</Formula>
+
+In the noise flow a packet moves at 56 to 136 px/s. A packet that goes out of the viewport comes back in on the opposite side. There is no respawn: packets are never removed. The packet itself is not drawn. It sets the heat of its cell to 1, and the heat decreases by 2.6 for each second, so a cell stays lit for approximately 0.37 s. The line of cooling cells behind the packet is its trail.
+
+</Section>
+
+<Section id="pipeline">
+
+<Pipeline>
+  <Step title="Limit the time step" reads="dt, reduced" writes="sdt">
+    `sdt` is `dt`, limited to 1/30 s, and multiplied by 0.5 when reduced motion is set.
+  </Step>
+  <Step title="Sample the field and cool the cells" reads="pointer.sx, sy, vx, vy, down; t" writes="fx, fy, heat">
+    For each cell, `field()` computes the vector at the cell centre and stores it. In the same loop, the heat of the cell decreases by `2.6 · sdt`, not below 0.
+  </Step>
+  <Step title="Move the packets" reads="fx, fy, px, py" writes="px, py, heat, hchar, pc">
+    Each packet finds its cell, moves with the vector of that cell, and wraps at the edges. Then it sets the heat of the cell to 1 and writes its digit into `hchar`. With a probability of 0.05 on each frame, the packet gets a new random digit.
+  </Step>
+  <Step title="Clear the canvas" reads="none" writes="canvas">
+    A full fill with `#050508` and the blend mode `source-over`. No part of the old frame stays. The trails come from the `heat` array, not from the canvas.
+  </Step>
+  <Step title="Draw the grid" reads="fx, fy, heat, hchar, atlas" writes="canvas">
+    The blend mode is `lighter`. For each cell, the code selects the glyph column, the tint row, and the alpha, and copies one tile from the atlas.
+  </Step>
+  <Step title="Draw the readout" reads="pointer.x, pointer.y, pointer.down" writes="canvas">
+    One `fillText` call draws the amber text at the cursor, for example `[x:0512 y:0384 VORTEX]`. When the cursor is near the right edge, the text goes to the left side of the cursor.
+  </Step>
+</Pipeline>
+
+The packets move after the heat decreases. A cell that contains a packet is thus always drawn with a heat of exactly 1.
+
+</Section>
+
+<Section id="code">
+
+### Value noise
+
+The arrow function `h` is the hash. It mixes the two lattice coordinates and the seed with large odd multipliers, folds the high bits down with two xor-shift steps, and keeps 16 bits. The `seed` argument gives the two noise layers independent values on the same lattice.
+
+<Excerpt file="effects/asciiField.js" region="value-noise" page="ascii" />
+
+### The field function
+
+Read it as four additions to `vx`, `vy`: noise, vortex, radial term, wind. `fall` is computed one time and used by the three cursor terms. The function writes into the array `out`, so the cell loop does not make a new object for each cell.
+
+<Excerpt file="effects/asciiField.js" region="field" page="ascii" />
+
+### Packets
+
+The cell index `k` is computed before the move, so a packet lights the cell that it leaves. The clamp of `c` and `r` keeps the index in the arrays when a position is on the edge of the viewport or outside it after a resize.
+
+<Excerpt file="effects/asciiField.js" region="packets" page="ascii" />
+
+### Glyph selection and the blit
+
+The three branches are in order of priority: heat, then weak flow, then direction. Note the exchange of buckets 1 and 3 for the canvas `y` axis. The loop ends with two canvas calls only: `globalAlpha` and `drawImage`. `glyph` is the atlas column and `tint` is the atlas row.
+
+<Excerpt file="effects/asciiField.js" region="glyph-select" page="ascii" />
+
+### The glyph atlas
+
+`ATLAS` is a string of 25 characters: `DIR` (columns 0 to 3), `HOT` (4 to 7), `HEX` (8 to 23), and the dot (24). The atlas canvas has one row for each of the 5 `TINTS`, so it has 125 tiles. Each tile has the size of a cell in device pixels (20 × 34 at a pixel ratio of 2), so a blit does not scale the glyph. Rows 3 and 4 (amber and white) get a `shadowBlur`. This puts the glow of the packet glyphs into the atlas, and the frame loop does not pay for a shadow.
+
+<Excerpt file="effects/asciiField.js" region="atlas" page="ascii" />
+
+`fillText` is used in two places only: 125 times here, one time in `init`, and one time for each frame for the cursor readout.
+
+</Section>
+
+<Section id="constants">
+
+<ParamTable>
+  <Param name="cell size" literal="this.cw = Math.round(fs * 0.7); this.ch = Math.round(fs * 1.2);" controls="Cell width and height as a ratio of the font size. 10 × 17 px for the 14 px font." why="A monospace glyph is approximately 0.6 of the font size wide. 0.7 and 1.2 give a small gap, so the glyphs read as a terminal grid. Smaller cells increase the cell count, and the full cost of the effect scales with that count." />
+  <Param name="noise scale" literal="const s = 0.0028;" controls="Lattice cells for each px. One lattice cell of the first layer is 357 px, approximately 36 glyph columns." why="With a larger value, adjacent glyphs have unrelated directions and the grid looks like static. With a smaller value, the full screen points in one direction. The second layer uses 2.1 times this scale and an offset of 40, so its lattice lines do not fall on those of the first layer." />
+  <Param name="noise to angle" literal="(n1 * 0.7 + n2 * 0.3) * Math.PI * 4 + t * 0.1" controls="Mix of the two layers, the angle range (two full turns), and the rotation of the field in rad/s." why="Value noise is an average of four values, so most results are near 0.5. With a range of one turn, most vectors point in almost the same direction. Two turns spread the angles over the full circle. The rotation of 0.1 rad/s changes each glyph in approximately 8 s when the noise does not move it." />
+  <Param name="base magnitude" literal="let mag = 0.35 + n2 * 0.5;" controls="Magnitude of the noise term, 0.35 to 0.85 units." why="The minimum is above the dot limit of 0.3, so the noise alone always gives a direction glyph. The maximum is one half of the vortex strength, so the vortex is always stronger than the noise near the cursor." />
+  <Param name="cursor radius" literal="Math.exp(-r2 / (2 * 190 * 190))" controls="σ of the Gaussian falloff of the three cursor terms, in px." why="190 px is 19 columns and 11 rows. A much smaller radius covers too few cells to show a ring with only four glyph directions. A much larger radius covers the noise field on the full screen." />
+  <Param name="vortex strength" literal="const A = 1.7 * fall * (p.down ? 1.8 : 1);" controls="Tangential speed in units, and the multiplier while the button is held (3.06)." why="1.7 is two times the noise maximum, so the rings are clean near the cursor and mix with the noise where the falloff is approximately 0.5. The held value is above the HOT limit of 2.6, so the sink gets a core of + * # @ glyphs." />
+  <Param name="source and sink" literal="const rad = p.down ? -1.2 : 0.7;" controls="Radial speed in units: positive is away from the cursor." why="With a vortex only, packets near the cursor go around it in closed circles. The source of 0.7 turns the circles into an outward spiral of approximately 22°, so packets leave. The sink of −1.2 with the vortex of 3.06 gives an inward spiral of approximately 21°. A much stronger radial term shows straight spokes and hides the rotation." />
+  <Param name="wind" literal="p.vx * 0.0025 * fall" controls="Field units for each px/s of pointer velocity." why="A slow move of 200 px/s gives 0.5 units, less than the noise. A fast stroke of 1,000 px/s gives 2.5 units, more than the vortex. The pointer module limits the velocity to 5,000 px/s, so the wind is never more than 12.5 units." />
+  <Param name="HOT limit" literal="if (mag > 2.6)" controls="Magnitude above which a cell shows + * # @ and not a direction glyph." why="With no button and a cursor that does not move, the cursor terms reach 1.76 and the noise 0.85, a sum of approximately 2.6 in the best case. The limit is thus at the top of the quiet range: HOT glyphs show almost only for a fast stroke or a held button." />
+  <Param name="packet count" literal="const P = width < 800 ? 40 : 90;" controls="Number of packets." why="90 packets with a trail of 2 to 5 cells each light a few percent of 9,405 cells. Many more packets hide the direction glyphs, which are the subject of the effect. A narrow viewport has fewer cells and gets 40." />
+  <Param name="packet speed" literal="const spd = 160;" controls="px/s for each field unit." why="In the noise flow the largest step is 136 px/s ÷ 30 = 4.5 px, less than the cell width of 10 px, so a packet does not jump over cells and the trail has no gaps. A much larger value makes gaps. A much smaller value makes packets that look static." />
+  <Param name="heat decay" literal="this.heat[i] - sdt * 2.6" controls="Heat loss for each second. A cell is lit for (1 − 0.05) ÷ 2.6 = 0.37 s." why="At 56 to 136 px/s a packet moves 20 to 50 px in that time, which gives a trail of 2 to 5 columns. A lower rate makes long trails that fill the grid with digits. A higher rate makes one blinking digit with no trail." />
+</ParamTable>
+
+</Section>
+
+<Section id="performance">
+
+All the work is on the CPU, and it scales with the cell count. It does not scale with the pixel count: the field is sampled one time for each cell, not for each pixel. For each cell and each frame, the code does this:
+
+- Two `vnoise` calls, which are 8 integer hashes and 2 pairs of smoothstep weights. Each `vnoise` call also makes the arrow function `h` again.
+- One `cos`, one `sin`, one `exp`, and one square root in `field()`.
+- One more square root and, for most cells, one `atan2` in the draw loop.
+- One `globalAlpha` change and one `drawImage` call.
+
+At 9,405 cells this is 18,810 noise calls and 9,405 canvas blits for each frame. The packet loop and the readout are small in comparison. No cell is skipped: a dim cell far from the cursor costs the same as a bright one.
+
+Limits that the module applies:
+
+- The device pixel ratio is limited to 2. This limits the size of the canvas and of the atlas tiles. It does not change the cell count.
+- The canvas is opaque (`alpha: false`), so the browser does not blend it with the page below it.
+- The grid loop has no `fillText`, no `fillStyle` change, and no `shadowBlur`. A `fillText` call must shape and draw the text each time, and the glow would need a shadow for each glyph. The atlas moves this work to `init`. Five tint rows and a variable `globalAlpha` give the full brightness range with only 125 tiles.
+- The arrays `fx`, `fy`, `heat`, and `hchar` are allocated in `resize`, not in the frame loop.
+- A viewport narrower than 800 px gets 40 packets. Its 12 px font makes smaller cells, so this branch does not decrease the cell count for a given area.
+
+<Measured
+  conditions="M-series Mac, Chromium, device pixel ratio 2. ms is the CPU time of update() only."
+  head={['viewport', 'build', 'fps', 'update ms', 'cells']}
+  rows={[
+    ['1024 × 768', 'static page (before Next.js)', '55 to 60', 'about 1', '4,738'],
+    ['1710 × 930', 'Next.js development', '60', '4.6', '9,405'],
+    ['1710 × 930', 'Next.js production', '60', '4.7', '9,405'],
+  ]}
+/>
+
+The static page at 1710 × 930 read 4.8 ms. The higher time in the last two rows thus comes from the larger viewport and not from the Next.js build. This is the most expensive of the eight effects on the CPU. The first row is an approximate value, and the time increases more than the cell count between the rows, although the code does the same work for each cell.
+
+</Section>
+
+<Section id="references">
+
+- Wikipedia, [Value noise](https://en.wikipedia.org/wiki/Value_noise). The noise type of `vnoise`: random values on a lattice with smooth interpolation between them.
+- Wikipedia, [Vector field](https://en.wikipedia.org/wiki/Vector_field). The object that the grid shows, and the terms source, sink, and rotation.
+- Wikipedia, [Vortex](https://en.wikipedia.org/wiki/Vortex). The velocity profiles of physical vortices. Compare them with the Gaussian falloff that this module uses.
+- MDN, [Optimizing canvas](https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API/Tutorial/Optimizing_canvas). The reasons for an offscreen pre-render, an opaque canvas, and few state changes.
+- Wikipedia, [ASCII art](https://en.wikipedia.org/wiki/ASCII_art). The tradition of pictures made from text glyphs.
+
+</Section>

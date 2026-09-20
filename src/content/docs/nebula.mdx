@@ -1,0 +1,234 @@
+<Section id="overview">
+
+A cloud of blue, magenta, cyan, and green gas fills the screen and moves slowly. Two layers of stars twinkle in it. The cursor is a light in the gas. It is also a lens: the gas and the stars near the cursor are pulled toward it and turned around it.
+
+The effect is one fragment shader on a full-screen quad, drawn with three.js. There are no particles, no textures, and no render targets. The shader keeps no state between frames: each pixel computes its colour from its position, the time, and the pointer uniforms.
+
+The gas is fractal Brownian motion (`fbm`) of value noise, with a two-level domain warp: the input coordinate of the last `fbm` call is displaced by the output of other `fbm` calls. This gives folded, fibrous shapes that plain noise does not have.
+
+The element count in the statistics is the number of pixels that the shader shades for each frame. It is the size of the internal drawing buffer, `Math.floor(w * pr) * Math.floor(h * pr)`, and not the size of the viewport in device pixels. `resize` computes it.
+
+</Section>
+
+<Section id="interaction">
+
+- **Move.** The shader gets the smoothed pointer position (`pointer.sx`, `pointer.sy`), not the raw one. The shared pointer smooths it with a rate constant of 10 per second, so the lens and the light follow the cursor with a lag of approximately 0.1 s.
+- **Move fast.** The smoothed pointer velocity (`pointer.vx`, `pointer.vy`) moves the sample point near the cursor by 0.25 s × velocity. The gas near the cursor is thus displaced against the direction of motion, like a wake. There is no speed threshold, and the module does not read `pointer.speed`.
+- **Hold the button.** `uDown` moves from 0 to 1 with an exponential ease (rate constant 6 per second). The swirl angle at the cursor grows from 0.7 rad to 3.2 rad, and the colour of the bright core changes from cyan to orange. The same ease goes back to 0 on release. A press edge has no separate action.
+- **Idle.** After 2.5 s with no input, the shared pointer goes into autopilot. The lens and the light follow its slow path. The gas also moves with no input, because the warp has time terms.
+
+`init` does not take the `reduced` flag from its arguments, so the module does not store it and `update` does not read it. Reduced motion does not slow this effect. There is no URL parameter and no mobile branch.
+
+</Section>
+
+<Section id="model">
+
+### Coordinates
+
+All shader lengths are in units of the viewport height, written H here. The origin is the screen centre, and y points up:
+
+<Formula caption="uRes is the buffer size in pixels. uv.y goes from −0.5 to 0.5. m is the cursor in the same units.">{`uv = (gl_FragCoord.xy − 0.5 · uRes) / uRes.y
+m  = (uMouse          − 0.5 · uRes) / uRes.y
+d  = uv − m        r = |d|`}</Formula>
+
+### Hash, value noise, fbm
+
+`hash21` makes a pseudo-random number in the range 0 to 1 from a 2D point. It uses only `fract` and `dot`, so it needs no texture. `vnoise` is value noise: it hashes the four corners of the lattice cell and interpolates between them with the weight `f² · (3 − 2f)`. This weight has a zero slope at the cell borders, so the lattice lines do not show as creases.
+
+`fbm` adds 5 octaves of `vnoise`:
+
+<Formula caption="Gain 0.5, lacunarity 2.03, offset 7.3. R is mat2(0.8, 0.6, −0.6, 0.8), a rotation by atan(0.6 / 0.8) = 36.87°.">{`fbm(p) = Σ  0.5^(i+1) · vnoise(p_i)        i = 0 … 4
+p_0    = p
+p_i+1  = 2.03 · R · p_i + 7.3`}</Formula>
+
+The amplitudes add up to 0.96875, so `fbm` stays below 1. The rotation is there because value noise has an axis-aligned lattice. If all octaves have the same axes, their lattice lines lie on top of each other, and the sum shows horizontal and vertical streaks. The rotation gives each octave its own axes. The numbers 0.8 and 0.6 come from the 3-4-5 triangle, so the matrix is an exact rotation with no scale. The lacunarity of 2.03 (not 2) and the offset of 7.3 prevent lattice points of different octaves from falling on the same positions.
+
+### Domain warp
+
+The gas coordinate is `p = 1.5 · q`, where `q` is the lensed coordinate (see below). Then:
+
+<Formula caption="t is uTime in seconds. A scalar added to a vec2 is added to the two components.">{`w1 = ( fbm(p + (0, 0.05·t)),
+       fbm(p + (5.2, 1.3) − 0.04·t) )
+
+w2 = ( fbm(p + 3.0·w1 + (1.7, 9.2) + 0.03·t),
+       fbm(p + 3.0·w1 + (8.3, 2.8) − 0.02·t) )
+
+f  = fbm(p + 2.6·w2)`}</Formula>
+
+The constant offsets such as `(5.2, 1.3)` make the two components of a warp vector read different parts of the noise. Without them, the x and y displacements are equal and the warp moves all points along one diagonal.
+
+The animation comes only from the four time terms. They have four different speeds (0.05, 0.04, 0.03, and 0.02 units of `p` for each second) and different directions, so the two warp levels slide against each other. The last `fbm` has no time term of its own. `f` changes only because `w2` changes, which makes the gas fold and unfold, and not scroll.
+
+One pixel costs 5 `fbm` calls, which is 25 `vnoise` calls or 100 hashes.
+
+### From scalar to colour
+
+`dens = smoothstep(0.25, 0.85, f)` is the gas density. The colour starts at a dark violet, `(0.02, 0.01, 0.05)`, and four `mix` steps follow:
+
+<Formula caption="Each line is col = mix(col, colour, weight). The last line is a multiplication.">{`blue    (0.06, 0.20, 0.75)   weight 0.9 · dens
+magenta (0.85, 0.12, 0.75)   weight clamp(2.2 · w1.x · w1.y, 0, 1) · dens
+cyan    (0.10, 0.95, 1.00)   weight clamp(w2.y − 0.45, 0, 1) · 2.0 · dens
+green   (0.30, 1.00, 0.35)   weight clamp(w2.x − 0.55, 0, 1) · 1.5 · dens²
+col     = col · (0.35 + 1.4 · dens)`}</Formula>
+
+The warp vectors are used a second time here, as colour selectors. They cost nothing more. They are related to the shape of `f` but not equal to it, so the colours follow the folds of the gas and do not look like a gradient map of one scalar. Green uses `dens²`, so it shows only in the densest parts.
+
+### Lens, swirl, and smear
+
+<Formula caption="Rot(−ang) is mat2(ca, −sa, sa, ca). GLSL fills matrices by column, so this matrix turns a vector clockwise by ang.">{`pull = 0.018 / (r + 0.05)
+ang  = (0.7 + 2.5 · uDown) · exp(−5 · r²)
+q    = m + Rot(−ang) · d · (1 − pull)
+q    = q + 0.25 · uMouseVel · exp(−6 · r²)`}</Formula>
+
+- **Pull.** The shader does not look up the scene at `uv`. It looks at a point nearer to the cursor. At the cursor centre `pull` is 0.36. The displacement is `r · pull`, which is zero at the centre and approaches 0.018 H far away. The constant 0.05 H prevents a division by zero. This is not the deflection law of a real gravitational lens. It is a magnifier with a similar look.
+- **Swirl.** The angle has a Gaussian falloff. At r = 0.37 H it is half of the centre value. Because the sample point turns clockwise, the picture turns counterclockwise around the cursor.
+- **Smear.** `uMouseVel` is the pointer velocity divided by the viewport height, in H/s, with y inverted. The falloff is a little narrower than that of the swirl.
+
+### Cursor light
+
+<Formula caption="cool = (0.4, 0.9, 1.0), warm = (1.0, 0.75, 0.3).">{`light = 0.22 / (28 · r² + 0.25)
+col  += (0.55, 0.9, 1.0) · light · (0.3 + 1.8 · dens)
+col  += mix(cool, warm, uDown) · 0.0035 / (r² + 0.0015)`}</Formula>
+
+The first term is a wide glow with a peak of 0.88 and a half-value radius of 0.094 H. The factor `0.3 + 1.8 · dens` makes it 7 times stronger in dense gas than in empty space, which reads as light that the gas scatters. The second term is the bright core: a peak of 2.33 and a half-value radius of 0.039 H. It does not depend on the density.
+
+### Stars
+
+`stars(uv, scale, t, bright)` divides the plane into square cells of `1 / scale`. A cell has a star if its hash is below 0.06, thus 6% of the cells. The star is at a random offset of at most ±0.4 cell from the cell centre, and its radius is 0.08 cell. Because 0.4 + 0.08 is less than 0.5, a star never touches its cell border, and the shader does not have to examine neighbour cells. Each star twinkles with `0.6 + 0.4 · sin(t · (1 + 40h) + 100h)`, where `h` is the cell hash.
+
+- **Far layer.** Coordinate `q`, scale 24, thus 24 cells for each H. Time `uTime`, brightness 0.9.
+- **Near layer.** Coordinate `q · 1.7 + 3.1`, scale 40, thus 68 cells for each H. Time `uTime · 1.3`, brightness `0.5 · (0.5 + dens)`, so these stars are brighter where the gas is dense.
+
+The gas and the two layers read the same `q`, so the lens bends all of them with the same map on the screen. The near layer has cells that are 2.8 times smaller, so the same displacement moves it across more cells. There is no parallax between the layers.
+
+### Vignette and tonemap
+
+`vig = 1 − 0.45 · |0.9 · uv|²` darkens the corners. Then `col = 1 − exp(−1.3 · col)` compresses the colour into the range 0 to 1. This is necessary because the light terms are added, and the core alone reaches 2.33. A hard clip at 1 makes a flat white disc. The exponential curve keeps a gradient up to the centre.
+
+</Section>
+
+<Section id="pipeline">
+
+<Pipeline>
+  <Step title="Write the pointer uniforms" reads="pointer.sx, sy, vx, vy, this.pr, this.height" writes="uMouse, uMouseVel">
+    `uMouse` is the smoothed pointer in buffer pixels: CSS px × `pr`, with y inverted, because `gl_FragCoord` has its origin at the bottom left. `uMouseVel` is the velocity in px/s divided by the viewport height in px, thus in H/s.
+  </Step>
+  <Step title="Ease the hold state" reads="pointer.down, dt" writes="uDown">
+    `uDown` moves toward 0 or 1 by the fraction `min(1, 6 · dt)` of the remaining distance. At 60 frames for each second this is 10% for each frame.
+  </Step>
+  <Step title="Set the time" reads="t" writes="uTime">
+    `t` is the time of the controller in seconds. The controller limits each `dt` to 0.05 s, so a stall does not make the gas jump.
+  </Step>
+  <Step title="Draw" reads="scene, camera" writes="drawing buffer">
+    One `renderer.render` call draws one mesh: a 2 × 2 plane. The vertex shader writes `position.xy` directly as clip coordinates and ignores the camera matrices. Depth test and depth write are off.
+  </Step>
+  <Step title="GPU: lens and gas" reads="uRes, uMouse, uMouseVel, uDown, uTime" writes="q, col">
+    For each pixel: pull, swirl, and smear give the sample coordinate `q`. Five `fbm` calls give `w1`, `w2`, and `f`, and the palette mixes the colour.
+  </Step>
+  <Step title="GPU: light, stars, vignette, tonemap" reads="r, dens, q, uTime, uDown" writes="gl_FragColor">
+    The glow, the core, and the two star layers are added. Then the vignette and the tonemap give the final colour, with alpha 1.
+  </Step>
+  <Step title="Browser: scale the canvas" reads="drawing buffer" writes="screen">
+    The CSS size of the canvas is the viewport size. When the buffer is smaller, the browser compositor enlarges it. The module has no pass for this.
+  </Step>
+</Pipeline>
+
+There is no accumulation buffer and no second pass. Each frame is one full-screen draw.
+
+</Section>
+
+<Section id="code">
+
+### Hash, value noise, and fbm
+
+Look at the loop in `fbm`. One statement, `p = m*p*2.03 + 7.3`, does the rotation, the lacunarity, and the offset. `a *= 0.5` is the gain.
+
+<Excerpt file="effects/nebula.js" region="noise-fbm" lang="glsl" page="nebula" />
+
+### Lens, swirl, and smear
+
+`d` is the vector from the cursor to the pixel. The shader turns and shortens `d`, and then adds it to `m` again. Note that `r` is computed one time, before the lens, and the light uses the same `r` later. The light is thus a circle on the screen and the lens does not bend it.
+
+<Excerpt file="effects/nebula.js" region="lens" lang="glsl" page="nebula" />
+
+### Domain warp and palette
+
+`w1` goes into the coordinates of `w2`, and `w2` goes into the coordinate of `f`. Then `w1` and `w2` occur again in the weights of the magenta, cyan, and green steps.
+
+<Excerpt file="effects/nebula.js" region="domain-warp" lang="glsl" page="nebula" />
+
+### One star layer
+
+The early `return` for 94% of the cells is the reason that the stars are cheap: those pixels pay for one hash. The last line adds a small halo, `0.02 / (d + 0.02)`, which doubles the brightness at the star centre.
+
+<Excerpt file="effects/nebula.js" region="star-layer" lang="glsl" page="nebula" />
+
+### Light, stars, vignette, and tonemap
+
+All terms here are additive, and the tonemap comes last. The near star layer is multiplied by `0.5 + dens`, so it is brighter where the gas is dense.
+
+<Excerpt file="effects/nebula.js" region="light-tonemap" lang="glsl" page="nebula" />
+
+### Resolution limit and the frame function
+
+`resize` computes the pixel ratio `pr`, gives it to three.js, and writes the same buffer size to `uRes` and to `this.count`. `update` has no loop. It sets four uniforms and makes one draw call.
+
+<Excerpt file="effects/nebula.js" region="resize-update" lang="js" page="nebula" />
+
+</Section>
+
+<Section id="constants">
+
+<ParamTable>
+  <Param name="octaves" literal="for(int i=0;i<5;i++)" controls="Number of noise layers in one fbm call." why="The shader calls fbm 5 times, so each octave adds 5 vnoise calls to each pixel. A sixth octave has an amplitude of 0.016, which the soft image does not show. Fewer than 4 octaves give smooth blobs with no fibres." />
+  <Param name="lacunarity, offset, gain" literal="p = m*p*2.03 + 7.3; a *= 0.5;" controls="Frequency ratio between octaves, the shift between octaves, and the amplitude ratio." why="A ratio of exactly 2.0 with no offset keeps the origin as a lattice point of all octaves, and the octaves are related by a simple ratio. The offset moves each octave to a different part of the noise. A gain above 0.5 makes the image grainy. A gain below 0.5 removes the detail that the warp needs." />
+  <Param name="octave rotation" literal="mat2(0.8,0.6,-0.6,0.8)" controls="Rotation of 36.87° between octaves." why="Without it, the axis-aligned lattices of all octaves agree, and the warp makes the streaks stronger. The values 0.8 and 0.6 give a determinant of exactly 1, so the rotation does not change the scale." />
+  <Param name="warp strength" literal="float f = fbm(p + 2.6*w2);" controls="Displacement of the last lookup by the second warp vector (3.0 for the first level)." why="fbm is less than 1, so the displacement is at most 2.6 noise cells. Below approximately 1 the gas looks like plain fbm. Much higher values stretch the noise into thin parallel lines and the cloud shapes are lost." />
+  <Param name="density window" literal="smoothstep(0.25, 0.85, f)" controls="The range of f that goes from empty space to full gas." why="fbm values collect around the middle of the range 0 to 0.97. A window that starts at 0 gives gas everywhere and no dark sky for the stars. A narrow window gives hard cloud edges." />
+  <Param name="lens pull" literal="float pull = 0.018/(r+0.05);" controls="Relative shift of the sample point toward the cursor. 0.36 at the centre." why="The ratio 0.018 / 0.05 must stay below 1. At 1 the factor (1 − pull) is zero and all pixels near the cursor read one point. Above 1 the image is mirrored." />
+  <Param name="swirl" literal="(0.7 + uDown*2.5) * exp(-r*r*5.0)" controls="Rotation angle in radians: 0.7 at rest, 3.2 when held, with a Gaussian falloff (half value at 0.37 H)." why="0.7 rad bends the gas but keeps its shapes readable. 3.2 rad is a half turn, which winds the gas into a spiral. A wider falloff turns the full screen, and the effect does not look local." />
+  <Param name="cursor glow" literal="float light = 0.22/(r*r*28.0 + 0.25);" controls="Peak (0.88) and half-value radius (0.094 H) of the scattered light." why="The factor 28 sets the radius. A lower value lights the full screen and removes the contrast between gas and sky. A higher value makes the glow as small as the core, and the gas does not look lit." />
+  <Param name="star density" literal="if (h > 0.06) return vec3(0.0);" controls="Part of the grid cells that contain a star: 6%." why="There is at most one star for each cell, so a high value shows the grid as a regular pattern. 6% leaves most cells empty, which hides the grid and keeps the cost at one hash for most pixels." />
+  <Param name="tonemap exposure" literal="col = 1.0 - exp(-col*1.3);" controls="Exposure before the exponential compression." why="The cursor core reaches 2.33 and the glow adds to it. With no compression the area around the cursor clips to flat white. A higher exposure makes the dark sky grey." />
+  <Param name="resolution limit" literal="Math.min(dpr, 1100 / w, 1)" controls="Pixel ratio of the drawing buffer: at most 1, and at most 1100 px of internal width." why="The cost is 100 hashes for each pixel. At device pixel ratio 2 a full-resolution buffer has 4 times more pixels than at ratio 1, and the image has no detail that needs them." />
+  <Param name="hold ease" literal="Math.min(1, dt * 6)" controls="Rate constant with which uDown follows the button, 6 per second. The limit of 1 prevents overshoot when dt is large." why="An immediate change from 0.7 rad to 3.2 rad makes the image jump. A slow rate makes the button feel disconnected from the swirl." />
+</ParamTable>
+
+</Section>
+
+<Section id="performance">
+
+All the cost is on the GPU, in the fragment shader, and it scales with the number of shaded pixels. The CPU part of a frame is four uniform writes and one draw call. It does not depend on the viewport. The shader has no texture reads, so the cost is arithmetic: 5 `fbm` calls of 5 octaves for each pixel, plus two hashes for the stars in most pixels.
+
+Limits that the module applies:
+
+- **Pixel ratio of at most 1.** `pr = Math.min(dpr, 1100 / w, 1)`. The controller gives a device pixel ratio of up to 2, but the third argument removes it. On a display with ratio 2, the shader shades one pixel for each 2 × 2 device pixels or fewer.
+- **Internal width of at most 1100 px.** For a viewport wider than 1100 CSS px, `pr` is `1100 / w`, so the buffer is 1100 px wide and `floor(h · 1100 / w)` px high.
+- **How three.js gets it.** `setPixelRatio(pr)` then `setSize(w, h)`: three.js makes the drawing buffer `floor(w · pr)` × `floor(h · pr)` and sets the CSS size of the canvas to `w` × `h`. The module writes the same `floor` values to `uRes`, so `gl_FragCoord` and `uRes` agree. `uMouse` is multiplied by `pr` for the same reason.
+- **No antialiasing and no alpha.** The renderer has `antialias: false`, because a full-screen quad has no visible edges, and `alpha: false`, so the browser does not blend the canvas with the page.
+
+A lower resolution is permitted because the image is soft. The smallest noise octave has cells that are several buffer pixels wide, and the palette and the tonemap are smooth functions, so the enlarged image has almost the same content as a full-resolution one. The stars are the only sharp part. They become softer, and the smallest stars of the near layer are near the size of one buffer pixel.
+
+<Measured
+  conditions="M-series Mac, Chromium, device pixel ratio 2. ms is the CPU time of update() only. GPU time is not included, so the value is near zero."
+  head={['viewport', 'build', 'fps', 'update ms', 'shaded pixels']}
+  rows={[
+    ['1024 × 768', 'static page (before Next.js)', '60', '0.1', '786,432'],
+    ['1710 × 930', 'Next.js development', '60', '0.1', '657,800'],
+    ['1710 × 930', 'Next.js production', '60', '0.2', '657,800'],
+  ]}
+/>
+
+The larger viewport shades fewer pixels. At 1024 px of width, `1100 / w` is 1.07, so `pr` is 1 and the buffer is 1024 × 768 = 786,432 pixels. At 1710 px of width, `pr` is 1100 / 1710 = 0.643, and the buffer is 1100 × 598 = 657,800 pixels. When the width is above the limit, the buffer width stays at 1100 and the height follows the aspect ratio. A wide viewport thus has fewer rows than a 4:3 viewport that is below the limit.
+
+</Section>
+
+<Section id="references">
+
+- Inigo Quilez, [Domain warping](https://iquilezles.org/articles/warp/). The source of the technique: `fbm(p + fbm(p + fbm(p)))`, the constant offsets in the warp vectors, and the use of the warp vectors for colour.
+- Inigo Quilez, [fBM](https://iquilezles.org/articles/fbm/). Octaves, gain, and lacunarity, and why a gain of 0.5 is the usual value.
+- Patricio Gonzalez Vivo and Jen Lowe, [The Book of Shaders, chapter 13: Fractal Brownian Motion](https://thebookofshaders.com/13/). An introduction with live examples. The last part shows domain warping.
+- Wikipedia, [Value noise](https://en.wikipedia.org/wiki/Value_noise). The noise type of `vnoise`, and how it differs from gradient noise.
+- Wikipedia, [Gravitational lens](https://en.wikipedia.org/wiki/Gravitational_lens). The physical effect that the cursor lens imitates. The module does not use its deflection law.
+
+</Section>

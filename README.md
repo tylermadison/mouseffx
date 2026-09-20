@@ -15,8 +15,8 @@ next one, `h` hides the UI. Hold the mouse button in every effect for a second
 mode. The URL hash selects an effect (`#fluid`), and `?q=1024` raises the
 gravity well to 1,048,576 particles.
 
-`pnpm build` and `pnpm start` run the production build. `pnpm lint` and
-`pnpm typecheck` check the code.
+`pnpm build` and `pnpm start` run the production build. `pnpm lint`,
+`pnpm typecheck`, and `pnpm check:docs` check the code and the docs.
 
 ## Layout
 
@@ -28,8 +28,43 @@ This is a Next.js app (App Router, TypeScript).
 | `src/components/MouseFx.tsx` | client components: provider, background layer, hero text, HUD |
 | `src/lib/mousefx/controller.ts` | effect selection, frame loop, keys, hash, resize, teardown |
 | `src/lib/mousefx/pointer.ts` | shared pointer with autopilot |
-| `src/lib/mousefx/registry.ts` | the eight effect definitions, each loaded on demand |
+| `src/lib/mousefx/catalogue.ts` | plain data for the eight effects (safe to import on the server) |
+| `src/lib/mousefx/registry.ts` | the catalogue plus one `import()` for each effect, loaded on demand |
+| `src/app/docs/`, `src/components/docs/`, `src/content/docs/` | the docs routes, components, and MDX content |
+| `scripts/check-docs.mjs` | checks the docs against the effect source |
 | `src/lib/mousefx/effects/` | the effect modules (plain JavaScript) |
+
+## Docs
+
+The site has a docs section that explains each effect: its model with formulas, its
+frame pipeline, its real code, and the reason for each tuned constant.
+
+| route | content |
+|-------|---------|
+| `/docs` | index of the eight effects |
+| `/docs/<effect-id>` | deep dive for one effect. The effect runs behind the page, with a control to stop it. |
+| `/docs/architecture` | the shared runtime: effect contract, pointer, frame loop, teardown, embedding |
+
+The content is MDX in `src/content/docs/`. The docs cannot go out of date silently:
+
+- Code excerpts are read from the real modules at build time. A region in a module
+  looks like this, each marker on its own line:
+
+  ```js
+  // #region doc:constraints
+  …code…
+  // #endregion doc:constraints
+  ```
+
+  A page shows it with `<Excerpt file="effects/tendrils.js" region="constraints" />`.
+- Each documented constant has its exact source text (`<Param literal="soft = 900" … />`).
+- `pnpm check:docs` checks the section order, each `literal`, and each region. It runs
+  before `next build`, so a changed constant or a removed region fails the build.
+
+When you change a module, read its docs page. The check finds changed constants and
+code, but it cannot find prose that is no longer correct.
+
+MDX has no table syntax here (no plugins). Use `<Table head={[…]} rows={[[…]]} />`.
 
 ## Effects
 
@@ -85,7 +120,9 @@ Every effect implements `init({container, pointer, width, height, dpr, reduced})
   `fillText` in the hot loop.
 - The loop pauses when the tab is hidden. `dt` is clamped so physics stays
   stable after a hitch.
-- `prefers-reduced-motion` slows the simulations.
+- `prefers-reduced-motion` slows five of the eight simulations (`gravity-well`, `matrix`,
+  `orbits`, `ascii`, `warp`). `fluid`, `tendrils`, and `nebula` do not read the flag. On the
+  docs pages the background does not start until the visitor starts it.
 - The pointer has an autopilot: after 2.5 s without input it drifts in a slow
   Lissajous path so the background never freezes.
 

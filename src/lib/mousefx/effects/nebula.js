@@ -8,12 +8,15 @@ precision highp float;
 uniform vec2 uRes, uMouse, uMouseVel;
 uniform float uTime, uDown;
 varying vec2 vUv;
+// #region doc:noise-fbm
 float hash21(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
 float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
   float a=hash21(i), b=hash21(i+vec2(1,0)), c=hash21(i+vec2(0,1)), d=hash21(i+vec2(1,1));
   return mix(mix(a,b,f.x), mix(c,d,f.x), f.y); }
 float fbm(vec2 p){ float v=0.0, a=0.5; mat2 m = mat2(0.8,0.6,-0.6,0.8);
   for(int i=0;i<5;i++){ v += a*vnoise(p); p = m*p*2.03 + 7.3; a *= 0.5; } return v; }
+// #endregion doc:noise-fbm
+// #region doc:star-layer
 vec3 stars(vec2 uv, float scale, float t, float bright){
   vec2 g = uv*scale; vec2 id = floor(g), f = fract(g)-0.5;
   float h = hash21(id);
@@ -25,7 +28,9 @@ vec3 stars(vec2 uv, float scale, float t, float bright){
   vec3 col = mix(vec3(0.7,0.85,1.0), vec3(1.0,0.8,0.95), hash21(id+9.1));
   return col * s + col * 0.02/(d+0.02) * s;
 }
+// #endregion doc:star-layer
 void main(){
+  // #region doc:lens
   vec2 uv = (gl_FragCoord.xy - 0.5*uRes)/uRes.y;
   vec2 m  = (uMouse - 0.5*uRes)/uRes.y;
   vec2 d = uv - m; float r = length(d);
@@ -36,6 +41,8 @@ void main(){
   vec2 dr = mat2(ca,-sa,sa,ca) * d * (1.0 - pull);
   vec2 q = m + dr;
   q += uMouseVel * 0.25 * exp(-r*r*6.0);           // motion smear
+  // #endregion doc:lens
+  // #region doc:domain-warp
   // domain-warped gas
   vec2 p = q*1.5;
   vec2 w1 = vec2(fbm(p + vec2(0.0, uTime*0.05)), fbm(p + vec2(5.2,1.3) - uTime*0.04));
@@ -48,6 +55,8 @@ void main(){
   col = mix(col, vec3(0.10,0.95,1.0), clamp(w2.y-0.45,0.0,1.0)*2.0*dens);
   col = mix(col, vec3(0.30,1.0,0.35), clamp(w2.x-0.55,0.0,1.0)*1.5*dens*dens);
   col *= 0.35 + 1.4*dens;
+  // #endregion doc:domain-warp
+  // #region doc:light-tonemap
   // cursor light scattering through the gas
   float light = 0.22/(r*r*28.0 + 0.25);
   col += vec3(0.55,0.9,1.0) * light * (0.3 + 1.8*dens);
@@ -59,6 +68,7 @@ void main(){
   float vig = 1.0 - 0.45*dot(uv*0.9, uv*0.9);
   col *= vig;
   col = 1.0 - exp(-col*1.3);
+  // #endregion doc:light-tonemap
   gl_FragColor = vec4(col, 1.0);
 }`;
 const VS = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
@@ -77,6 +87,7 @@ export default {
     this.scene.add(quad); this.quad = quad;
     this.resize(width, height, dpr);
   },
+  // #region doc:resize-update
   resize(w, h, dpr) {
     this.width = w; this.height = h;
     // cap the internal resolution: fbm is per-pixel expensive, the image is soft anyway
@@ -94,5 +105,6 @@ export default {
     u.uTime.value = t;
     this.renderer.render(this.scene, this.cam);
   },
+  // #endregion doc:resize-update
   dispose() { this.mat.dispose(); this.quad.geometry.dispose(); this.renderer.dispose(); this.renderer.forceContextLoss(); this.renderer.domElement.remove(); },
 };

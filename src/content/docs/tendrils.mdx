@@ -1,0 +1,183 @@
+<Section id="overview">
+
+Sixteen glowing ropes hang from the cursor. Each rope is a chain of points that keep a fixed distance from their neighbours. Gravity pulls each rope in its own direction, so the bundle opens like a sea anemone. A wind that changes with time moves the rope ends. When you move the cursor fast, the ropes whip, and the fast tips throw sparks.
+
+The effect is plain canvas 2D. There is no physics library and no WebGL. All state is in typed arrays: four `Float32Array` for each rope (position and previous position, `x` and `y`).
+
+The element count in the statistics is the total number of rope points. It changes between page loads, because each rope gets a random length: 16 ropes of 29 to 38 points give 464 to 608 points on a desktop viewport. A viewport narrower than 800 px gets 9 ropes of 17 to 26 points.
+
+</Section>
+
+<Section id="interaction">
+
+- **Move.** Point 0 of each rope is pinned to the cursor. The rope has no velocity variable, so a fast cursor move becomes a large displacement of point 0, and the constraint solver passes that displacement down the chain. This is the whip.
+- **Move fast.** When a rope tip moves faster than 900 px/s, it emits sparks that keep 35% of the tip velocity.
+- **Hold the button.** The ropes become electrified: gravity goes to zero, the drag becomes much stronger, a large random force shakes each point on each frame, and the ropes are drawn white.
+- **Idle.** After 2.5 s with no input, the shared pointer goes into autopilot and moves on a slow path. The ropes follow it, so the background does not freeze.
+
+The module stores the `reduced` flag from `init`, but `update` does not read it. Reduced motion does not slow this effect.
+
+</Section>
+
+<Section id="model">
+
+### Verlet integration
+
+A point has a position `x` and a previous position `px`. The velocity is not stored. It is the difference between the two, and the step is:
+
+<Formula caption="Position Verlet with drag. a is the acceleration, dt the time step.">{`v      = (x − px) · drag
+px     = x
+x      = x + v + a · dt²`}</Formula>
+
+This form is the reason that the effect is stable with a simple constraint solver. When a constraint moves a point, the velocity of the next frame changes with it, and no separate velocity correction is necessary.
+
+One property is important: `v` is a displacement for each frame, not for each second, and `drag` is applied one time for each frame. The motion thus depends a little on the frame rate. `dt` is limited to 1/30 s, and on a usual 60 Hz display the result is the tuned one.
+
+### Forces
+
+Each point `i` of a rope with `n` points gets this acceleration:
+
+<Formula caption="The factor i / n makes the wind zero at the anchor and full at the tip.">{`a.x = wind(t) · (i / n) + G · cos(gdir)
+a.y = wave(t, i) · (i / n) + G · sin(gdir)
+
+wind(t)    = 160 · sin(t · freq + phase) + 80 · sin(0.37 · t + r)
+wave(t, i) =  90 · sin(1.3 · t + phase + 0.2 · i)`}</Formula>
+
+- `G = 380` px/s² is gravity. It does not point straight down. Each rope `r` has its own direction `gdir = π/2 + ((r + 0.5) / R − 0.5) · 2.4`. For 16 ropes this is a fan of approximately ±64° around straight down (the comment in the source rounds this to ±70°).
+- `wind` is horizontal. It is the sum of a fast term with a random frequency and phase for each rope, and a slow term that all ropes share apart from an offset of `r`.
+- `wave` is vertical. The term `0.2 · i` shifts the phase along the rope, so the wave travels from the anchor to the tip.
+
+### Distance constraints
+
+After the integration, neighbour points are no longer at the rest distance `L`. The solver goes along the chain and moves each pair back:
+
+<Formula caption="d is the current distance between points i and i + 1.">{`diff = (d − L) / d
+first segment :  x[1]   −= Δ · diff            (the anchor does not move)
+other segments:  x[i]   += Δ · diff · 0.5
+                 x[i+1] −= Δ · diff · 0.5`}</Formula>
+
+One pass does not satisfy all constraints, because the correction of one segment disturbs the segment before it. The module runs 4 passes on each frame. This is Gauss-Seidel relaxation. With 4 passes the ropes are not fully rigid: they stretch a little when you whip them, and that elastic look is intended.
+
+</Section>
+
+<Section id="pipeline">
+
+<Pipeline>
+  <Step title="Fade the canvas" reads="previous frame" writes="canvas">
+    A rectangle in the background colour is drawn with alpha `1 − 0.78^(60 · dt)`. This keeps 78% of the old image for each 1/60 s at all frame rates, and it makes the light trails.
+  </Step>
+  <Step title="Pin the anchor" reads="pointer.x, pointer.y" writes="x[0], px[0]">
+    Point 0 goes to the cursor plus an offset of 6 px on a circle that turns at 0.8 rad/s. Each rope has its own angle on that circle, so the ropes do not start from one pixel.
+  </Step>
+  <Step title="Integrate" reads="x, px" writes="x, px">
+    Points 1 to n − 1 do the Verlet step with gravity, wind, and wave.
+  </Step>
+  <Step title="Relax the constraints" reads="x" writes="x">
+    Four passes along the chain.
+  </Step>
+  <Step title="Emit sparks" reads="tip x, px" writes="spark pool">
+    Tip speed is `(x − px) / dt`. Above 900 px/s, a spark is made with a probability of 0.6 on that frame.
+  </Step>
+  <Step title="Draw the rope" reads="x" writes="canvas">
+    Two strokes of one smooth path with additive blend (`lighter`): a wide glow and a thin bright core.
+  </Step>
+  <Step title="Update and draw the sparks" reads="spark pool" writes="spark pool, canvas">
+    All 900 slots are examined. Live sparks fall with 600 px/s², lose 2% of their velocity for each frame, and are drawn as 2 × 2 px squares.
+  </Step>
+  <Step title="Draw the anchor glow" reads="pointer.x, pointer.y" writes="canvas">
+    A radial gradient of 40 px radius at the cursor.
+  </Step>
+</Pipeline>
+
+Steps 2 to 6 run one time for each rope.
+
+</Section>
+
+<Section id="code">
+
+### Rope setup
+
+Each rope gets its own length, segment length, colour, wind phase and frequency, line width, and gravity direction. All points start in a straight line below the cursor, with `px = x`, so the start velocity is zero.
+
+<Excerpt file="effects/tendrils.js" region="rope-setup" page="tendrils" />
+
+### Integration
+
+`drag` and `G` are set one time for each frame from the button state. Note that the force is multiplied by `dt2` (dt²), and the velocity term is not multiplied by a time value. The last line pins point 0, and it also sets `px[0]`, so the anchor has no velocity of its own.
+
+<Excerpt file="effects/tendrils.js" region="integrate" page="tendrils" />
+
+### Constraint relaxation
+
+`|| 1e-4` prevents a division by zero when two points are at the same position. The first segment gives the full correction to point 1. All other segments divide it between the two points.
+
+<Excerpt file="effects/tendrils.js" region="constraints" page="tendrils" />
+
+### Sparks from the tip
+
+The tip velocity is converted to px/s first, so that the 900 px/s limit does not depend on the frame rate.
+
+<Excerpt file="effects/tendrils.js" region="tip-sparks" page="tendrils" />
+
+The pool is a ring buffer of 900 slots. A new spark overwrites the oldest slot, so there is no allocation in the frame loop:
+
+<Excerpt file="effects/tendrils.js" region="spark-update" page="tendrils" />
+
+### Drawing
+
+The points are the control points of quadratic curves, and the curves end at the midpoints between the points. This gives a smooth line through a chain of straight segments with no spline library.
+
+<Excerpt file="effects/tendrils.js" region="draw" page="tendrils" />
+
+</Section>
+
+<Section id="constants">
+
+<ParamTable>
+  <Param name="ropes, points" literal="this.R = mobile ? 9 : 16; this.S = mobile ? 26 : 38;" controls="Number of ropes and the maximum points for each rope." why="16 ropes fill the fan with no gaps. 38 points of 5 to 11 px give ropes of 190 to 420 px, which is long on a desktop screen and too long on a phone." />
+  <Param name="segment length" literal="len: 5 + Math.random() * 6" controls="Rest distance L between neighbour points, in px." why="Short segments make smooth curves. The random part makes ropes of different total length, so the tips do not move together." />
+  <Param name="gravity, drag" literal="G = elec ? 0 : 380, drag = elec ? 0.9 : 0.985" controls="Gravity in px/s², and the part of the velocity that stays after each frame." why="0.985 lets a whip travel to the tip before it dies. 0.9 in the electrified mode removes energy quickly, which is necessary because the random force adds a lot of it." />
+  <Param name="gravity fan" literal="- 0.5) * 2.4" controls="Spread of the gravity directions, in radians, from the first rope to the last." why="With one direction, all ropes hang in one line and hide each other." />
+  <Param name="constraint passes" literal="for (let k = 0; k < 4; k++)" controls="Relaxation passes for each frame." why="More passes make stiffer ropes and cost more. Four is the minimum at which the ropes do not look like rubber." />
+  <Param name="electric force" literal="(Math.random() - 0.5) * 9000" controls="Random acceleration for each axis in the electrified mode, ±4500 px/s²." why="It must be much larger than gravity (380) to show as a crackle against the strong drag." />
+  <Param name="spark limit" literal="tsp > 900 && Math.random() < 0.6" controls="Tip speed in px/s above which sparks occur, and the probability for each frame." why="Normal cursor movement stays below 900 px/s at the tip. Only a real whip goes above it. The probability prevents a solid line of sparks." />
+  <Param name="spark pool" literal="const P = 900" controls="Maximum number of live sparks." why="16 tips × 0.6 × 60 frames × about 0.8 s life is approximately 460 sparks in the worst case, so 900 is never full in normal use." />
+  <Param name="spark gravity" literal="s.vy[i] += 600 * sdt" controls="Downward acceleration of sparks in px/s²." why="Stronger than the rope gravity, so sparks fall away from the ropes and do not float with them." />
+  <Param name="trail decay" literal="Math.pow(0.78, sdt * 60)" controls="Part of the old image that stays after 1/60 s." why="Lower values remove the trails. Higher values fill the screen with light, because the blend is additive." />
+  <Param name="step limit" literal="Math.min(dt, 1 / 30)" controls="Largest time step that the simulation accepts." why="A larger dt² makes the force term so large that the constraint solver cannot hold the rope together." />
+</ParamTable>
+
+</Section>
+
+<Section id="performance">
+
+The cost is on the CPU, and it has two parts. The physics is small: about 540 points × 4 constraint passes is approximately 2,200 square roots for each frame. The larger part is canvas drawing: 32 stroked paths with round caps and additive blend, and one full-screen fill for the fade.
+
+Limits that the module applies:
+
+- The device pixel ratio is limited to 2.
+- The canvas is opaque (`alpha: false`), so the browser does not blend it with the page below it.
+- The spark loop has no allocation. It skips dead slots with one comparison.
+- The rope count and length go down on viewports narrower than 800 px.
+
+<Measured
+  conditions="M-series Mac, Chromium, device pixel ratio 2. ms is the CPU time of update() only."
+  head={['viewport', 'build', 'fps', 'update ms', 'points']}
+  rows={[
+    ['1024 × 768', 'static page (before Next.js)', '60', '0.7', '539'],
+    ['1710 × 930', 'Next.js development', '60', '0.2', '505'],
+    ['1710 × 930', 'Next.js production', '60', '0.3', '530'],
+  ]}
+/>
+
+The point count is different in each row because the rope lengths are random.
+
+</Section>
+
+<Section id="references">
+
+- Thomas Jakobsen, [Advanced Character Physics](https://www.cs.cmu.edu/afs/cs/academic/class/15462-s13/www/lec_slides/Jakobsen.pdf) (2001). The source of the method: position Verlet with constraint relaxation.
+- Wikipedia, [Verlet integration](https://en.wikipedia.org/wiki/Verlet_integration). The derivation and the error terms.
+- MDN, [globalCompositeOperation](https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/globalCompositeOperation). The `lighter` blend mode that makes the glow.
+
+</Section>

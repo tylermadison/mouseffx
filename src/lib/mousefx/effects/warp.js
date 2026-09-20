@@ -12,6 +12,7 @@ attribute float aEnd, aSeed;
 varying float vAlpha, vSeed, vDepth;
 const float D = 40.0;
 vec2 project(vec3 p, float end){
+  // #region doc:project
   float z = mod(p.z + uScroll, D);
   float zz = z + end * uStreak * (0.3 + 0.7*z/D);
   vec2 xy = p.xy + uSteer * zz * 0.6;              // parallax steering
@@ -26,24 +27,29 @@ vec2 project(vec3 p, float end){
   dm *= 1.0 - 0.35*exp(-r*r*3.0);
   vDepth = z / D;
   return uMouse + dm;
+  // #endregion doc:project
 }`;
 
 const LINE_VS = COMMON + /* glsl */`
 void main(){
+  // #region doc:line-vertex
   vec2 ndc = project(position, aEnd);
   float z = vDepth;
   vAlpha = (1.0 - aEnd) * smoothstep(0.0, 0.06, z) * pow(1.0 - z, 1.2);
   vSeed = aSeed;
   gl_Position = vec4(ndc, 0.0, 1.0);
+  // #endregion doc:line-vertex
 }`;
 const POINT_VS = COMMON + /* glsl */`
 void main(){
+  // #region doc:point-vertex
   vec2 ndc = project(position, 0.0);
   float z = vDepth;
   vAlpha = smoothstep(0.0, 0.06, z) * pow(1.0 - z, 1.5);
   vSeed = aSeed;
   gl_PointSize = (1.5 + 5.0 * pow(1.0 - z, 3.0)) * (1.0 + uWarp * 0.5);
   gl_Position = vec4(ndc, 0.0, 1.0);
+  // #endregion doc:point-vertex
 }`;
 const COLOR = /* glsl */`
 uniform float uWarp;
@@ -65,6 +71,7 @@ const FADE_FS = `uniform sampler2D tPrev; uniform float uDecay; varying vec2 vUv
 const COMP_FS = /* glsl */`
 uniform sampler2D tSrc; uniform vec2 uVanish; uniform float uWarp, uAspect, uTime; varying vec2 vUv;
 void main(){
+  // #region doc:composite
   vec3 c = texture2D(tSrc, vUv).rgb;
   vec2 d = (vUv - uVanish) * vec2(uAspect, 1.0); float r = length(d);
   // tunnel glow at the vanishing point, brighter in warp
@@ -74,6 +81,7 @@ void main(){
   c += vec3(0.02, 0.01, 0.05) * (1.0 - r);
   c = 1.0 - exp(-c * 1.4);
   gl_FragColor = vec4(c, 1.0);
+  // #endregion doc:composite
 }`;
 
 export default {
@@ -87,6 +95,7 @@ export default {
     container.appendChild(renderer.domElement);
     this.renderer = renderer;
 
+    // #region doc:star-attributes
     const pos = new Float32Array(N * 2 * 3), end = new Float32Array(N * 2), seed = new Float32Array(N * 2);
     const ppos = new Float32Array(N * 3), pseed = new Float32Array(N);
     for (let i = 0; i < N; i++) {
@@ -95,6 +104,7 @@ export default {
       for (let k = 0; k < 2; k++) { const j = i * 2 + k; pos[j * 3] = x; pos[j * 3 + 1] = y; pos[j * 3 + 2] = z; end[j] = k; seed[j] = s; }
       ppos[i * 3] = x; ppos[i * 3 + 1] = y; ppos[i * 3 + 2] = z; pseed[i] = s;
     }
+    // #endregion doc:star-attributes
     const u = { uScroll: { value: 0 }, uStreak: { value: 0.5 }, uAspect: { value: width / height }, uLens: { value: 0 }, uWarp: { value: 0 }, uSteer: { value: new THREE.Vector2() }, uMouse: { value: new THREE.Vector2() } };
     this.u = u;
     const lg = new THREE.BufferGeometry();
@@ -128,6 +138,7 @@ export default {
   update(dt, t) {
     const { renderer, u, pointer: p } = this;
     const w = this.width, h = this.height;
+    // #region doc:update-frame
     // warp factor: quick attack, slow release
     const target = Math.max(0, (p.speed - 300) / 1600) + (p.down ? 1 : 0);
     const k = target > this.warp ? 4 : 1.4;
@@ -160,6 +171,7 @@ export default {
     cm.uVanish.value.set((this.steer.x * 1.71 / u.uAspect.value) * 0.5 + 0.5, this.steer.y * 1.71 * 0.5 + 0.5);
     this.quad.material = this.compMat;
     renderer.setRenderTarget(null); renderer.clear(); renderer.render(this.quadScene, this.cam);
+    // #endregion doc:update-frame
   },
 
   resize(w, h) {

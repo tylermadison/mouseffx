@@ -1,0 +1,240 @@
+<Section id="overview">
+
+You fly through a tunnel of stars. Each star is a short line of light with a bright head. All lines point away from one point on the screen, the vanishing point, and that point follows the cursor. Near the cursor the lines turn out of the pattern, as if the cursor bends the light. When you move the cursor fast or hold the button, the stars accelerate, the lines become long streaks, the colours go to blue, and a glow opens at the vanishing point.
+
+The effect uses three.js, but only as a thin layer on WebGL. There are two draw objects with custom shaders: a `LineSegments` object for the streaks and a `Points` object for the heads. The stars have no state that changes. JavaScript fills the vertex buffers one time in `init`, and after that it changes only a small number of uniforms for each frame. The vertex shader computes the position of each star from one scroll value. The three.js camera is a plain `THREE.Camera` with identity matrices, because the shader does the perspective projection itself. For the same reason, `frustumCulled` is off on the two objects: the three.js culling test uses the seed positions, which have no relation to the screen positions.
+
+The image goes through a feedback trail of two render targets and then through a composite pass that adds the glow, a background tint, and a tone curve.
+
+The element count in the statistics (`this.count`) is the number of stars `N`. It is 14,000, or 5,000 when the viewport is narrower than 800 px at `init`. Each star is one line segment and one point, so the GPU gets 2 × N line vertices and N point vertices.
+
+</Section>
+
+<Section id="interaction">
+
+- **Move.** The vanishing point moves in the direction of the cursor. The module uses the smoothed pointer (`pointer.sx`, `pointer.sy`) and smooths it again with a rate of 2.5 for each second, so the star field swings slowly behind the cursor. The vanishing point is not below the cursor: its offset from the screen centre is 1.54 times the cursor offset in y, and 1.54 / aspect times the cursor offset in x.
+- **Lens.** The raw pointer position (`pointer.x`, `pointer.y`) is the centre of a lens. Streak ends near the cursor turn around it by a maximum of 0.55 rad and move a maximum of 35% nearer to it. The lens has no delay.
+- **Move fast.** Pointer speed above 300 px/s starts the warp. The warp factor is full at 1,900 px/s. It goes up fast (rate 4 for each second) and comes down slowly (rate 1.4 for each second).
+- **Hold the button.** The warp factor goes to 1 with no pointer movement, and the lens twist goes from 0.55 rad to 1.6 rad. The module reads only `pointer.down`. The press edge (`downTime`) has no function here.
+- **Idle.** After 2.5 s with no input, the shared pointer goes into autopilot. Its slow path steers the vanishing point and moves the lens. The autopilot speed stays below or near the 300 px/s limit, so the warp factor stays at or near zero.
+
+`update` reads the `reduced` flag in one place. With reduced motion, the base speed is 2 depth units for each second and not 5. The warp term (+55) does not change, so fast pointer movement or a held button still gives the full warp speed.
+
+There is no URL parameter. The only mobile branch is the star count.
+
+</Section>
+
+<Section id="model">
+
+### Depth without state
+
+A star has a seed position `p` that never changes: `p.xy` is a random point in a ring (radius 0.25 to 3.45 units) and `p.z` is a random depth from 0 to 40. The only value that moves is the uniform `uScroll`. JavaScript decreases it by `speed · dt` on each frame, and the shader computes the depth from it:
+
+<Formula caption="D = 40.0 is the depth of the tunnel. warp is the warp factor, 0 to 1.">{`speed   = (reduced ? 2 : 5) + 55 · warp         depth units / s
+uScroll = uScroll − speed · dt
+z       = mod(p.z + uScroll, D)                  0 ≤ z < D`}</Formula>
+
+`z` decreases with time, so the star comes to the camera. When `z` goes below 0, `mod` puts the star back at `D`. GLSL `mod` gives a result that is not negative for a negative input, so JavaScript does not wrap `uScroll`. A star lives for 8 s at rest and for 0.67 s at full warp.
+
+The jump from 0 to `D` must not be visible. The alpha of a star is zero at the two ends of the range:
+
+<Formula caption="The exponent is 1.2 for a line head and 1.5 for a point. aEnd is 0 at the head and 1 at the tail.">{`line  alpha = (1 − aEnd) · smoothstep(0, 0.06, z/D) · (1 − z/D)^1.2
+point alpha =              smoothstep(0, 0.06, z/D) · (1 − z/D)^1.5`}</Formula>
+
+### Projection and vanishing point
+
+The function `project(p, end)` in `COMMON` does the perspective projection. `S` is the uniform `uSteer`:
+
+<Formula caption="zz is the depth that the projection uses. For a head, zz = z.">{`w     = 0.35 · zz + 0.15
+ndc   = (p.xy + 0.6 · S · zz) / w
+ndc.x = ndc.x / uAspect`}</Formula>
+
+The division by `w` is the perspective divide. The constant 0.15 keeps `w` above zero when `z` is 0, and it limits the magnification to 1 / 0.15. The term `0.6 · S · zz` moves far stars more than near stars. It is possible to write the same equation in a different form:
+
+<Formula caption="V is the vanishing point in normalized device coordinates, before the aspect division.">{`V   = (0.6 / 0.35) · S = 1.714 · S
+ndc = V + (p.xy − 0.15 · V) / w`}</Formula>
+
+This form shows three properties. When `zz` is large, `1 / w` goes to zero and each star goes to `V`. The path of a star on the screen is a straight line through `V`. And `S` is sufficient to find `V`, which is how `update` computes the uniform `uVanish` for the glow (the source rounds the factor to 1.71).
+
+`S` follows 0.9 times the cursor position in normalized device coordinates, so `V` is 1.54 times the cursor offset. When the cursor is more than 65% of the way to the top or bottom edge, the vanishing point is outside the screen.
+
+### The tail vertex
+
+The two vertices of a line have the same seed position. They differ only in `aEnd`. The tail is the same star at a larger depth:
+
+<Formula caption="uStreak = 0.25 + 6.0 · warp, in depth units.">{`zz = z + aEnd · uStreak · (0.3 + 0.7 · z/D)`}</Formula>
+
+Because head and tail are two points on the same straight path through `V`, each streak points exactly away from the vanishing point. The tail is also where the star was a moment before, so the streak is a correct motion blur. The length on the screen is:
+
+<Formula caption="Δ is the depth offset of the tail.">{`length = |p.xy − 0.15 · V| · 0.35 · Δ / (w_head · w_tail)`}</Formula>
+
+The length decreases with the square of `w`. That is the reason for the weight `0.3 + 0.7 · z/D`: far stars get a depth offset that is up to 3.3 times larger, or their streaks would be dots. The offset is added after the `mod`, so a streak is never divided between the two ends of the tunnel.
+
+### Lens
+
+After the projection, each vertex moves relative to the cursor `uMouse`. `r` is the distance to the cursor in units of half the viewport height:
+
+<Formula caption="uLens goes to 0.55 rad, or to 1.6 rad while the button is held, with a rate of 4 for each second.">{`dm  = ndc − uMouse
+r   = | dm · (uAspect, 1) |
+ang = uLens · exp(−2.5 · r²)
+dm  = rotate(dm, −ang) · (1 − 0.35 · exp(−3.0 · r²))
+ndc = uMouse + dm`}</Formula>
+
+The two Gaussian terms are below 10% of their maximum at `r` = 1, so the lens changes only the streaks near the cursor. A streak stays a straight segment. The lens moves its head and its tail by different amounts, and thus the segment turns out of the radial pattern. The rotation is clockwise. It is applied to `dm` before the aspect correction, so on a wide viewport the rotation is a little elliptical.
+
+### Warp factor
+
+<Formula caption="The rate k is 4 when the factor goes up and 1.4 when it comes down.">{`target = max(0, (pointer.speed − 300) / 1600) + (pointer.down ? 1 : 0)
+warp  += (min(1, target) − warp) · min(1, dt · k)`}</Formula>
+
+The warp factor changes these values:
+
+- speed: 5 to 60 depth units for each second
+- streak depth offset `uStreak`: 0.25 to 6.25
+- line brightness: `0.3 + 0.5 · warp`
+- point size: × `1 + 0.5 · warp`
+- star colour: mixed up to 50% with the blue `(0.6, 0.85, 1.0)`
+- trail decay base: 0.5 to 0.7
+- glow at the vanishing point: strength 0.05 to 0.40, colour from dark blue to cyan
+
+### Colour and heads
+
+`COLOR` selects the star colour from the seed `aSeed`: 66% of the stars are blue-white `(0.85, 0.95, 1.0)`, 6% are green (seed above 0.66), 14% are cyan (above 0.72), and 14% are magenta (above 0.86). The warp mix comes after that.
+
+A head is a point sprite. `POINT_VS` sets its size to `(1.5 + 5 · (1 − z/D)³) · (1 + 0.5 · warp)` pixels: 1.5 px at the far end, 6.5 px near the camera, and 9.75 px at full warp. `POINT_FS` makes a soft disc: with `d = 4 · |gl_PointCoord − 0.5|²`, it discards the fragment where `d` is above 1 and uses `(1 − d)²` as the intensity.
+
+### Trail and composite
+
+`FADE_FS` multiplies the image of the last frame by `uDecay = (0.5 + 0.2 · warp)^(60 · dt)`, and the new stars are added to the result. The exponent makes the decay independent of the frame rate. With a constant input, the sum goes to `1 / (1 − 0.5)` = 2 times the input at rest and to 3.3 times at full warp. The trail is thus short. Its primary function is glow and soft line ends, not long tails.
+
+`COMP_FS` reads the trail and adds two terms. `r` is here the distance to `uVanish` in units of the viewport height:
+
+<Formula caption="The last line is a tone curve that keeps the sum below 1.">{`glow = mix((0.1, 0.3, 0.9), (0.4, 0.9, 1.0), warp) · (0.05 + 0.35 · warp) / (6 · r + 0.6)
+c    = trail + glow + (0.02, 0.01, 0.05) · (1 − r)
+out  = 1 − exp(−1.4 · c)`}</Formula>
+
+The second term is a weak violet tint that is strongest at the vanishing point. It is negative where `r` is above 1, so it also makes the far corners a little darker. There is no separate vignette. The shader declares a uniform `uTime`, and `update` sets it, but the shader does not read it.
+
+</Section>
+
+<Section id="pipeline">
+
+<Pipeline>
+  <Step title="Ease the warp factor" reads="pointer.speed, pointer.down" writes="this.warp">
+    The target comes from the pointer speed and the button. The rate is 4 for each second when the target is above the current value, and 1.4 when it is below.
+  </Step>
+  <Step title="Advance the tunnel" reads="this.warp, this.reduced, dt" writes="uScroll, uStreak, uWarp">
+    `uScroll` decreases by `speed · dt`. This one number moves all stars.
+  </Step>
+  <Step title="Steer and set the lens" reads="pointer.sx, sy, x, y, down" writes="this.steer, uSteer, uMouse, uLens">
+    `this.steer` goes to 0.9 times the smoothed cursor position. `uMouse` gets the raw cursor position. `uLens` goes to 0.55 or 1.6.
+  </Step>
+  <Step title="Fade the trail" reads="trail[tp]" writes="trail[1 − tp]">
+    The target is cleared, and a full-screen quad with `FADE_FS` writes the old image multiplied by `uDecay`.
+  </Step>
+  <Step title="Draw the stars" reads="position, aEnd, aSeed, uniforms" writes="trail[1 − tp]">
+    The scene with the lines and the points is drawn on the faded image with additive blend. `renderer.autoClear = false` makes this possible. The order of lines and points has no effect, because addition is commutative. Then `tp` changes to the other target.
+  </Step>
+  <Step title="Composite" reads="trail[tp], this.steer, this.warp" writes="canvas">
+    `uVanish` is computed from `this.steer` in texture coordinates. The quad with `COMP_FS` draws the trail, the glow, and the tint to the screen.
+  </Step>
+</Pipeline>
+
+There are three render calls for each frame, and no loop over the stars on the CPU.
+
+</Section>
+
+<Section id="code">
+
+### How a star is stored
+
+Look at the inner loop with `k`. It writes each star two times into the line buffers with the same position and seed. Only `end[j] = k` is different: 0 for the head and 1 for the tail. The point buffers get the star one time. The exponent 0.7 on the radius puts more stars away from the axis than a uniform radius does.
+
+<Excerpt file="effects/warp.js" region="star-attributes" lang="js" page="warp" />
+
+### Projection and lens
+
+This is the body of `project(vec3 p, float end)` in `COMMON`. The first two lines are the full depth model: the `mod` recycle and the tail offset. Note that `vDepth` uses `z` and not `zz`, so the head and the tail of a line get the same depth for the alpha calculation.
+
+<Excerpt file="effects/warp.js" region="project" lang="glsl" page="warp" />
+
+### The line vertex shader
+
+`LINE_VS` is `COMMON` plus this `main`. It passes `aEnd` to `project`. The factor `(1.0 - aEnd)` makes the alpha zero at the tail, and the GPU interpolates `vAlpha` along the line, so each streak fades from head to tail. `gl_Position` has `w = 1`, because the perspective divide is already done.
+
+<Excerpt file="effects/warp.js" region="line-vertex" lang="glsl" page="warp" />
+
+### The point vertex shader
+
+`POINT_VS` calls `project` with `end = 0.0`, so a point is always at the head of its line. The point geometry has an `aEnd` attribute that is all zeros. It is there only because `COMMON` declares the attribute. The cube in the size term makes only the nearest stars large.
+
+<Excerpt file="effects/warp.js" region="point-vertex" lang="glsl" page="warp" />
+
+### The composite shader
+
+`d` is multiplied by the aspect ratio, so the glow is round on all viewports. The glow term has the form `1 / (6r + 0.6)`: it is finite at the centre and decreases to half at `r` = 0.1.
+
+<Excerpt file="effects/warp.js" region="composite" lang="glsl" page="warp" />
+
+### One frame
+
+The first block is the warp factor with its two rates. The middle block sets the steering and lens uniforms: note that the steering uses `p.sx` and the lens uses `p.x`. The last two blocks are the render order: fade into the other target, draw the stars on top, change the target index, then composite to the screen (`setRenderTarget(null)`).
+
+<Excerpt file="effects/warp.js" region="update-frame" lang="js" page="warp" />
+
+</Section>
+
+<Section id="constants">
+
+<ParamTable>
+  <Param name="star count" literal="const N = width < 800 ? 5000 : 14000" controls="Number of stars. Each star is one line segment and one point." why="The stars cost no CPU time, so the limit is the look and the GPU. A narrow viewport has less area, so 14,000 additive streaks there make a crowded, bright image, and a phone GPU has less vertex capacity." />
+  <Param name="star ring" literal="0.25 + Math.pow(Math.random(), 0.7) * 3.2" controls="Distance of a star from the tunnel axis, 0.25 to 3.45 units." why="A star on the axis stays at the vanishing point for its full life, so with no minimum radius there is a static bright spot. An exponent of 1 crowds the stars near the axis. 0.5 gives equal density for each unit of area. 0.7 is between the two." />
+  <Param name="tunnel depth" literal="const float D = 40.0" controls="Depth range of the recycle. The JavaScript seed depth uses the same value (Math.random() * 40)." why="At z = D the divisor w is 14.15, so a new star appears very near the vanishing point. A smaller D makes stars appear farther out, where the fade-in is visible. A larger D puts more of the stars into the small, dim far end." />
+  <Param name="perspective divide" literal="xy / (zz * 0.35 + 0.15)" controls="The divisor w of the projection. 0.35 is the field-of-view factor. 0.15 is the offset at z = 0." why="With an offset of 0, the position goes to infinity at z = 0 and the line vertices become invalid. A larger offset lowers the maximum magnification (1 / 0.15 = 6.7). Near stars then move outward more slowly, and the sense of speed near the camera decreases." />
+  <Param name="streak depth weight" literal="(0.3 + 0.7*z/D)" controls="Part of uStreak that a star at depth z gets as its tail offset." why="Screen length decreases with w², so with a constant weight the far streaks are dots and the near streaks cross the screen. The weight gives far stars 3.3 times the offset of near stars." />
+  <Param name="warp speed range" literal="(p.speed - 300) / 1600" controls="Pointer speed at which the warp starts (300 px/s) and is full (1,900 px/s)." why="Usual pointing stays below 300 px/s, so it does not start the warp. With a lower limit, each small movement makes the star field pulse. The shared pointer limits speed to 5,000 px/s and smooths it, so 1,900 px/s needs a real sweep." />
+  <Param name="attack and release" literal="const k = target > this.warp ? 4 : 1.4" controls="Ease rate of the warp factor for each second: up and down." why="The pointer speed falls to zero quickly when the hand stops or reverses. The slow release (time constant 0.7 s) holds the warp through these short stops. The fast attack (0.25 s) makes the response immediate." />
+  <Param name="speed" literal="(this.reduced ? 2 : 5) + warp * 55" controls="Tunnel speed in depth units for each second." why="At 60 units/s and 60 fps a star moves 1 unit for each frame. The warp streak is 1.9 to 6.25 units long, so the streaks of two consecutive frames overlap and the movement has no gaps. A higher speed breaks this." />
+  <Param name="streak length" literal="u.uStreak.value = 0.25 + warp * 6.0" controls="Depth offset of the tail vertex before the depth weight." why="At rest, 0.25 gives streaks of a few pixels, so a star looks almost like a point. 6.25 in warp is 16% of the tunnel depth. A larger value makes all lines reach the vanishing point and the image becomes a solid fan." />
+  <Param name="steering" literal="(tx * 0.9 - this.steer.x) * Math.min(1, dt * 2.5)" controls="Gain (0.9) and smoothing rate (2.5 for each second) of the steer vector." why="The steer term moves all stars at the same time. A high rate makes the full image shake with each small cursor movement. A low rate feels disconnected from the cursor." />
+  <Param name="lens twist" literal="(p.down ? 1.6 : 0.55)" controls="Rotation at the lens centre in radians: button held, not held." why="0.55 rad (32°) is sufficient to break the radial pattern visibly. 1.6 rad (92°) turns streaks near the cursor perpendicular to the flow, which shows the held state clearly. Above π/2, the streaks at the lens centre point against the flow." />
+  <Param name="trail decay" literal="Math.pow(0.5 + warp * 0.2, dt * 60)" controls="Part of the old image that stays after 1/60 s." why="The blend is additive, so the steady-state brightness is 1 / (1 − decay) times the input. 0.5 doubles it. Values near 1 multiply it many times, and the streaks become fog." />
+</ParamTable>
+
+</Section>
+
+<Section id="performance">
+
+Almost all of the cost is on the GPU. The vertex shader runs 42,000 times for each frame on desktop (28,000 line vertices and 14,000 point vertices), and each run has two `exp` calls, one `sin`, and one `cos` for the lens. This part scales with the star count. The fragment cost of the stars is small, because a line is 1 px wide and a point is 10 px or less. The part that scales with pixels is the two full-screen passes (fade and composite) and the two trail textures.
+
+The CPU cost is constant. `update` writes approximately 12 uniforms and makes three render calls. It does not touch the vertex buffers after `init`, so the star count has no effect on the CPU time.
+
+Limits that the module applies:
+
+- The renderer pixel ratio is 1. The module ignores the `dpr` value that the controller supplies (which the controller limits to 2). The reason in the source is the line width: WebGL lines are 1 device pixel wide, and with pixel ratio 1 that is 1 CSS px. It also means that a display with a device pixel ratio of 2 has a quarter of the pixels in each full-screen pass. The browser scales the canvas up, so the image is softer than a native image.
+- 5,000 stars when the viewport is narrower than 800 px at `init`. `resize` does not change the count.
+- The trail textures are half float when `EXT_color_buffer_float` or `EXT_color_buffer_half_float` is available. If not, they are unsigned byte. Then the additive sum clips at 1.0 before the tone curve, and bright areas saturate.
+- `antialias: false`, no depth buffer on the trail targets, and no depth test. All draws are additive, so depth has no function.
+- `resize` disposes and makes the two trail targets again, so the trail starts empty after a resize.
+
+<Measured
+  conditions="M-series Mac, Chromium, device pixel ratio 2. ms is the CPU time of update() only. GPU time is not included."
+  head={['viewport', 'build', 'fps', 'update ms', 'streaks']}
+  rows={[
+    ['1024 × 768', 'static page (before Next.js)', '60', '1.0', '14,000'],
+    ['1710 × 930', 'Next.js development', '60', '0.2', '14,000'],
+    ['1710 × 930', 'Next.js production', '60', '0.2', '14,000'],
+  ]}
+/>
+
+</Section>
+
+<Section id="references">
+
+- Wikipedia, [3D projection](https://en.wikipedia.org/wiki/3D_projection). The perspective projection: the division of x and y by the depth, which `project` does by hand.
+- Wikipedia, [Vanishing point](https://en.wikipedia.org/wiki/Vanishing_point). Why parallel paths in depth meet at one point on the image plane.
+- three.js docs, [LineSegments](https://threejs.org/docs/pages/LineSegments.html). Each pair of vertices is one independent line, which is why a star needs two vertices.
+- three.js docs, [ShaderMaterial](https://threejs.org/docs/pages/ShaderMaterial.html). Custom attributes, uniforms, and the built-in `position` attribute that the shaders use.
+- Wikipedia, [Gravitational lens](https://en.wikipedia.org/wiki/Gravitational_lens). The physical effect that the cursor lens imitates. The module does not compute real deflection. It uses a rotation and a pull with a Gaussian falloff.
+
+</Section>

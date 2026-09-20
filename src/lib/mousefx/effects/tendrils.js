@@ -16,6 +16,7 @@ export default {
     const mobile = width < 800;
     this.R = mobile ? 9 : 16; this.S = mobile ? 26 : 38;
     this.ropes = [];
+    // #region doc:rope-setup
     for (let r = 0; r < this.R; r++) {
       const n = this.S - ((Math.random() * 10) | 0);
       const rope = { n, x: new Float32Array(n), y: new Float32Array(n), px: new Float32Array(n), py: new Float32Array(n),
@@ -25,6 +26,7 @@ export default {
       for (let i = 0; i < n; i++) { rope.x[i] = rope.px[i] = pointer.x; rope.y[i] = rope.py[i] = pointer.y + i * rope.len; }
       this.ropes.push(rope);
     }
+    // #endregion doc:rope-setup
     this.count = this.ropes.reduce((a, r) => a + r.n, 0);
     // spark pool
     const P = 900; this.P = P; this.sp = { x: new Float32Array(P), y: new Float32Array(P), vx: new Float32Array(P), vy: new Float32Array(P), life: new Float32Array(P), c: new Uint8Array(P) }; this.spi = 0;
@@ -60,6 +62,7 @@ export default {
 
     for (let r = 0; r < this.ropes.length; r++) {
       const rope = this.ropes[r], n = rope.n, x = rope.x, y = rope.y, px = rope.px, py = rope.py;
+      // #region doc:integrate
       // anchor: cursor with a small rotating offset so ropes fan out
       const a = t * 0.8 + (r / this.ropes.length) * Math.PI * 2;
       const ax = p.x + Math.cos(a) * 6, ay = p.y + Math.sin(a) * 6;
@@ -74,6 +77,8 @@ export default {
         x[i] += vx + fx * dt2; y[i] += vy + fy * dt2;
       }
       x[0] = ax; y[0] = ay; px[0] = ax; py[0] = ay;
+      // #endregion doc:integrate
+      // #region doc:constraints
       // constraints
       const L = rope.len;
       for (let k = 0; k < 4; k++) {
@@ -84,9 +89,13 @@ export default {
           else { dx *= diff * 0.5; dy *= diff * 0.5; x[i] += dx; y[i] += dy; x[i + 1] -= dx; y[i + 1] -= dy; }
         }
       }
+      // #endregion doc:constraints
+      // #region doc:tip-sparks
       // tip speed → sparks
       const tip = n - 1, tvx = (x[tip] - px[tip]) / sdt, tvy = (y[tip] - py[tip]) / sdt, tsp = Math.hypot(tvx, tvy);
       if (tsp > 900 && Math.random() < 0.6) this.spark(x[tip], y[tip], tvx * 0.35 + (Math.random() - 0.5) * 200, tvy * 0.35 + (Math.random() - 0.5) * 200, r % COLORS.length);
+      // #endregion doc:tip-sparks
+      // #region doc:draw
       // draw: wide glow + bright core, smoothed through midpoints
       const c = rope.col;
       const path = () => {
@@ -97,8 +106,10 @@ export default {
       path();
       ctx.strokeStyle = elec ? 'rgba(200,230,255,0.18)' : `rgba(${c[0]},${c[1]},${c[2]},0.14)`; ctx.lineWidth = rope.width * 6; ctx.stroke();
       ctx.strokeStyle = elec ? 'rgba(255,255,255,0.95)' : `rgba(${c[0]},${c[1]},${c[2]},0.85)`; ctx.lineWidth = rope.width; ctx.stroke();
+      // #endregion doc:draw
     }
 
+    // #region doc:spark-update
     // sparks
     const s = this.sp;
     for (let i = 0; i < this.P; i++) {
@@ -109,6 +120,7 @@ export default {
       ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${Math.min(1, s.life[i] * 2)})`;
       ctx.fillRect(s.x[i], s.y[i], 2, 2);
     }
+    // #endregion doc:spark-update
     // anchor glow
     const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 40);
     g.addColorStop(0, 'rgba(255,255,255,0.8)'); g.addColorStop(0.3, 'rgba(25,240,255,0.25)'); g.addColorStop(1, 'rgba(25,240,255,0)');

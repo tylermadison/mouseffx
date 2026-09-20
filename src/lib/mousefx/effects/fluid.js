@@ -3,11 +3,14 @@
 // gradient subtract → advect velocity → advect dye → display.
 // The cursor splats velocity + neon dye into the fields.
 
+// #region doc:neighbour-varyings
 const VS = `precision highp float; attribute vec2 aPosition; varying vec2 vUv, vL, vR, vT, vB; uniform vec2 texelSize;
 void main(){ vUv = aPosition*0.5+0.5; vL = vUv-vec2(texelSize.x,0.); vR = vUv+vec2(texelSize.x,0.); vT = vUv+vec2(0.,texelSize.y); vB = vUv-vec2(0.,texelSize.y); gl_Position = vec4(aPosition,0.,1.); }`;
 const H = `precision highp float; precision highp sampler2D; varying vec2 vUv, vL, vR, vT, vB;`;
+// #endregion doc:neighbour-varyings
 const FS = {
   clear: H + `uniform sampler2D uTexture; uniform float value; void main(){ gl_FragColor = value*texture2D(uTexture,vUv); }`,
+  // #region doc:field-shaders
   splat: H + `uniform sampler2D uTarget; uniform float aspectRatio, radius; uniform vec3 color; uniform vec2 point;
     void main(){ vec2 p = vUv-point; p.x*=aspectRatio; vec3 s = exp(-dot(p,p)/radius)*color; vec3 b = texture2D(uTarget,vUv).xyz; gl_FragColor = vec4(b+s,1.); }`,
   advect: H + `uniform sampler2D uVelocity, uSource; uniform vec2 texelSize; uniform float dt, dissipation;
@@ -27,6 +30,7 @@ const FS = {
   gradient: H + `uniform sampler2D uPressure, uVelocity;
     void main(){ float L=texture2D(uPressure,vL).x, R=texture2D(uPressure,vR).x, T=texture2D(uPressure,vT).x, B=texture2D(uPressure,vB).x;
       vec2 v = texture2D(uVelocity,vUv).xy - vec2(R-L,T-B); gl_FragColor = vec4(v,0.,1.); }`,
+  // #endregion doc:field-shaders
   display: H + `uniform sampler2D uTexture; uniform vec2 texelSize;
     void main(){ vec3 c = texture2D(uTexture,vUv).rgb;
       vec3 lc=texture2D(uTexture,vL).rgb, rc=texture2D(uTexture,vR).rgb, tc=texture2D(uTexture,vT).rgb, bc=texture2D(uTexture,vB).rgb;
@@ -94,6 +98,7 @@ export default {
     return a > 1 ? { w: Math.round(base * a), h: base } : { w: base, h: Math.round(base / a) };
   },
 
+  // #region doc:framebuffers
   fbo(w, h, internal, format, type, filter) {
     const gl = this.gl;
     const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -120,6 +125,7 @@ export default {
     this.pressure = this.dfbo(s.w, s.h, gl.R16F, gl.RED, HF, gl.NEAREST);
     this.count = s.w * s.h;
   },
+  // #endregion doc:framebuffers
 
   blit(target) {
     const gl = this.gl;
@@ -130,6 +136,7 @@ export default {
 
   use(name) { const pr = this.prog[name]; this.gl.useProgram(pr.p); return pr.u; },
 
+  // #region doc:splat
   color(h, k = 1) {
     // blend between neighbouring palette entries → smooth neon hue drift
     const n = PALETTE.length, f = ((h % 1) + 1) % 1 * n, i = Math.floor(f), t = f - i;
@@ -148,12 +155,14 @@ export default {
     gl.uniform3f(u.color, color[0], color[1], color[2]);
     this.blit(this.dye.write); this.dye.swap();
   },
+  // #endregion doc:splat
 
   update(dt, t) {
     const gl = this.gl, p = this.pointer, c = this.cfg;
     const sdt = Math.min(dt, 1 / 40);
     gl.disable(gl.BLEND);
 
+    // #region doc:input
     // ---- input ----
     const dxp = p.x - this.lastX, dyp = p.y - this.lastY;
     this.lastX = p.x; this.lastY = p.y;
@@ -177,7 +186,9 @@ export default {
       for (let i = 0; i < 14; i++) { const a = (i / 14) * Math.PI * 2; this.splat(nx, ny, Math.cos(a) * 2500, Math.sin(a) * 2500, this.color(this.hue + i / 14, 0.5), 1.6); }
     }
     this.wasDown = p.down;
+    // #endregion doc:input
 
+    // #region doc:solve
     // ---- solve ----
     const V = this.velocity;
     let u = this.use('curl');
@@ -206,6 +217,7 @@ export default {
     gl.uniform1f(u.dt, sdt); gl.uniform1f(u.dissipation, c.VEL_DISS); this.blit(V.write); V.swap();
     gl.uniform1i(u.uVelocity, V.read.attach(0)); gl.uniform1i(u.uSource, this.dye.read.attach(1));
     gl.uniform1f(u.dissipation, c.DYE_DISS); this.blit(this.dye.write); this.dye.swap();
+    // #endregion doc:solve
 
     // ---- display ----
     u = this.use('display');

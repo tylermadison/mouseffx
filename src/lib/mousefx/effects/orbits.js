@@ -32,12 +32,15 @@ export default {
   spawn(i, initial) {
     const w = this.width, h = this.height, p = this.pointer;
     if (initial) {
+      // #region doc:seed-orbit
       // ring around the cursor with orbital velocity
       const a = Math.random() * Math.PI * 2, r = 80 + Math.random() * Math.min(w, h) * 0.55;
       this.x[i] = p.sx + Math.cos(a) * r; this.y[i] = p.sy + Math.sin(a) * r;
       const v = Math.sqrt(this.GM / r) * (0.85 + Math.random() * 0.3);
       this.vx[i] = -Math.sin(a) * v; this.vy[i] = Math.cos(a) * v;
+      // #endregion doc:seed-orbit
     } else {
+      // #region doc:respawn-edge
       // enter from a random screen edge, drifting inward
       const side = (Math.random() * 4) | 0, s = Math.random();
       if (side === 0) { this.x[i] = -10; this.y[i] = s * h; } else if (side === 1) { this.x[i] = w + 10; this.y[i] = s * h; }
@@ -45,6 +48,7 @@ export default {
       const dx = p.sx - this.x[i], dy = p.sy - this.y[i], d = Math.hypot(dx, dy) + 1;
       const v = 60 + Math.random() * 120, side_ = Math.random() < 0.5 ? 1 : -1;
       this.vx[i] = (dx / d) * v * 0.4 + (-dy / d) * v * side_; this.vy[i] = (dy / d) * v * 0.4 + (dx / d) * v * side_;
+      // #endregion doc:respawn-edge
     }
   },
 
@@ -77,11 +81,14 @@ export default {
     const GM = this.GM, soft = 900, sub = 2, hdt = sdt / sub;
     const sx = p.sx, sy = p.sy;
     const cx = w / 2, cy = h / 2;
+    // #region doc:nova-state
     if (p.down && !this.wasDown) this.nova = 1;   // press edge → shockwave
     this.wasDown = p.down;
     const novaF = this.nova; this.nova = Math.max(0, this.nova - sdt * 1.6);
     const repel = p.down ? 1 : 0;
+    // #endregion doc:nova-state
     const x = this.x, y = this.y, vx = this.vx, vy = this.vy;
+    // #region doc:gravity-step
     for (let s = 0; s < sub; s++) {
       for (let i = 0; i < N; i++) {
         let dx = sx - x[i], dy = sy - y[i];
@@ -99,11 +106,15 @@ export default {
         x[i] += vx[i] * hdt; y[i] += vy[i] * hdt;
       }
     }
+    // #endregion doc:gravity-step
+    // #region doc:trail-fade
     // fade trails
     ctx.globalCompositeOperation = 'destination-out';
     ctx.fillStyle = `rgba(0,0,0,${1 - Math.pow(0.82, sdt * 60)})`;
     ctx.fillRect(0, 0, w, h);
     ctx.globalCompositeOperation = 'lighter';
+    // #endregion doc:trail-fade
+    // #region doc:speed-buckets
     // bodies, batched by colour bucket
     const lut = this.lut, buckets = this.buckets || (this.buckets = Array.from({ length: 64 }, () => []));
     for (let b = 0; b < 64; b++) buckets[b].length = 0;
@@ -121,6 +132,7 @@ export default {
       const sz = 1.2 + b / 63 * 1.6;
       for (let k = 0; k < arr.length; k++) { const i = arr[k]; ctx.fillRect(x[i] - sz / 2, y[i] - sz / 2, sz, sz); }
     }
+    // #endregion doc:speed-buckets
     // the star
     ctx.globalAlpha = 1;
     const R = 70 + novaF * 260 + (p.down ? 30 : 0);

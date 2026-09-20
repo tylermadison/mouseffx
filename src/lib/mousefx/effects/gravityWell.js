@@ -28,6 +28,7 @@ float snoise(vec3 v){
   vec4 m=max(0.6-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.0); m=m*m;
   return 42.0*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));
 }
+// #region doc:curl-noise
 vec3 snoise3(vec3 p){ return vec3(snoise(p), snoise(p+vec3(31.416,-47.853,12.793)), snoise(p+vec3(-233.145,61.233,-7.41))); }
 vec3 curl(vec3 p){
   const float e=0.05;
@@ -40,6 +41,7 @@ vec3 curl(vec3 p){
   float z=(x1.y-x0.y)-(y1.x-y0.x);
   return normalize(vec3(x,y,z)+1e-6)*clamp(length(vec3(x,y,z))/(2.0*e),0.0,1.5);
 }
+// #endregion doc:curl-noise
 float hash12(vec2 p){ vec3 p3=fract(vec3(p.xyx)*0.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
 `;
 
@@ -53,6 +55,7 @@ uniform vec3 uMouse, uMouseVel;
 uniform float uDt, uTime, uDown, uAspect;
 varying vec2 vUv;
 void main(){
+  // #region doc:velocity-pass
   vec4 P = texture2D(tPos, vUv);
   vec4 V = texture2D(tVel, vUv);
   vec3 pos = P.xyz, vel = V.xyz;
@@ -81,6 +84,7 @@ void main(){
   vel *= exp(-uDt * 1.1);
   float sp = length(vel); if (sp > 2.6) vel *= 2.6 / sp;
   gl_FragColor = vec4(vel, V.w);
+  // #endregion doc:velocity-pass
 }`;
 
 const POS_FS = NOISE + /* glsl */`
@@ -89,6 +93,7 @@ uniform vec3 uMouse;
 uniform float uDt, uTime, uAspect;
 varying vec2 vUv;
 void main(){
+  // #region doc:position-respawn
   vec4 P = texture2D(tPos, vUv);
   vec3 vel = texture2D(tVel, vUv).xyz;
   float h = hash12(vUv * 517.3);
@@ -109,6 +114,7 @@ void main(){
     life = 1.5; // >1 flags "fresh" for the velocity pass
   }
   gl_FragColor = vec4(pos, life);
+  // #endregion doc:position-respawn
 }`;
 
 const PT_VS = /* glsl */`
@@ -117,12 +123,14 @@ uniform float uSize;
 attribute vec2 ref;
 varying float vSpeed, vLife;
 void main(){
+  // #region doc:point-sprite
   vec4 P = texture2D(tPos, ref);
   vec3 v = texture2D(tVel, ref).xyz;
   vSpeed = length(v); vLife = min(P.w, 1.0);
   vec4 mv = modelViewMatrix * vec4(P.xyz, 1.0);
   gl_Position = projectionMatrix * mv;
   gl_PointSize = uSize * (0.7 + 0.6 * smoothstep(0.0, 2.0, vSpeed)) * (0.6 + 0.4 * (P.z + 0.5));
+  // #endregion doc:point-sprite
 }`;
 
 const PT_FS = /* glsl */`
@@ -200,6 +208,7 @@ export default {
     this.copyMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VS, fragmentShader: COPY_FS, uniforms: { tSrc: { value: null } }, depthTest: false, depthWrite: false });
     this.initMat = new THREE.ShaderMaterial({ vertexShader: QUAD_VS, fragmentShader: INIT_FS, uniforms: { tSrc: { value: null } }, depthTest: false, depthWrite: false });
 
+    // #region doc:seed
     // Seed positions
     const data = new Float32Array(N * N * 4);
     for (let i = 0; i < N * N; i++) {
@@ -215,6 +224,7 @@ export default {
     for (const rt of this.pos) { renderer.setRenderTarget(rt); renderer.clear(); renderer.render(this.quadScene, this.quadCam); }
     for (const rt of this.vel) { renderer.setRenderTarget(rt); renderer.clear(); }
     seed.dispose();
+    // #endregion doc:seed
 
     // Points
     const geo = new THREE.BufferGeometry();
@@ -247,6 +257,7 @@ export default {
 
   update(dt, t) {
     const { renderer, pointer: p, shared } = this;
+    // #region doc:update-frame
     const aspect = this.width / this.height;
     const mx = (p.sx / this.width * 2 - 1) * aspect, my = -(p.sy / this.height * 2 - 1);
     shared.uMouse.value.set(mx, my, 0);
@@ -283,6 +294,7 @@ export default {
     this.copyMat.uniforms.tSrc.value = this.trail[to].texture;
     this.quad.material = this.copyMat;
     renderer.setRenderTarget(null); renderer.clear(); renderer.render(this.quadScene, this.quadCam);
+    // #endregion doc:update-frame
   },
 
   resize(w, h, dpr) {

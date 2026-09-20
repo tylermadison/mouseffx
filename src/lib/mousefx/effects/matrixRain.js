@@ -20,6 +20,7 @@ export default {
   },
 
   buildAtlas() {
+    // #region doc:atlas
     const fs = this.fs, pr = this.pr;
     this.cw = Math.round(fs * 0.62); this.ch = Math.round(fs * 1.15);
     const cw = this.cw * pr, ch = this.ch * pr;
@@ -34,12 +35,14 @@ export default {
       for (let i = 0; i < GLYPHS.length; i++) c.fillText(GLYPHS[i], i * cw + cw / 2, ti * ch + ch / 2);
     });
     this.atlas = a; this.acw = cw; this.ach = ch;
+    // #endregion doc:atlas
   },
 
   resize(w, h, dpr) {
     this.width = w; this.height = h;
     this.canvas.width = Math.floor(w * this.pr); this.canvas.height = Math.floor(h * this.pr);
     this.ctx.setTransform(this.pr, 0, 0, this.pr, 0, 0);
+    // #region doc:grid
     this.cols = Math.ceil(w / this.cw) + 1; this.rows = Math.ceil(h / this.ch) + 1;
     const n = this.cols * this.rows; this.count = n;
     this.glyph = new Uint8Array(n); this.ox = new Float32Array(n); this.oy = new Float32Array(n);
@@ -47,6 +50,7 @@ export default {
     for (let i = 0; i < n; i++) this.glyph[i] = (Math.random() * GLYPHS.length) | 0;
     this.head = new Float32Array(this.cols); this.speed = new Float32Array(this.cols); this.trail = new Float32Array(this.cols);
     for (let c = 0; c < this.cols; c++) this.resetCol(c, true);
+    // #endregion doc:grid
     // vignette overlay, rendered once
     const v = document.createElement('canvas'); v.width = 256; v.height = 256;
     const vc = v.getContext('2d');
@@ -67,6 +71,7 @@ export default {
     const n = cols * rows;
     const sdt = Math.min(dt, 1 / 30) * (this.reduced ? 0.6 : 1);
 
+    // #region doc:rain-step
     // rain heads
     for (let c = 0; c < cols; c++) {
       this.head[c] += this.speed[c] * sdt;
@@ -75,7 +80,9 @@ export default {
     // random glyph flicker
     const flips = (n * 0.02) | 0;
     for (let i = 0; i < flips; i++) { const k = (Math.random() * n) | 0; this.glyph[k] = (Math.random() * GLYPHS.length) | 0; }
+    // #endregion doc:rain-step
 
+    // #region doc:springs
     // spring physics + cursor force
     const R = 170, R2 = R * R, k = 55, damp = 7;
     const mx = p.x, my = p.y, push = p.down ? -1.0 : 1.0;
@@ -88,6 +95,8 @@ export default {
       this.ox[i] += this.vx[i] * sdt; this.oy[i] += this.vy[i] * sdt;
       if (this.heat[i] > 0) this.heat[i] = Math.max(0, this.heat[i] - sdt * 1.4);
     }
+    // #endregion doc:springs
+    // #region doc:cursor-force
     for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
       const i = r * cols + c;
       const cx = c * cw + cw / 2 + this.ox[i], cy = r * ch + ch / 2 + this.oy[i];
@@ -102,11 +111,13 @@ export default {
       this.heat[i] = Math.max(this.heat[i], f);
       if (Math.random() < f * 0.5) this.glyph[i] = (Math.random() * GLYPHS.length) | 0;
     }
+    // #endregion doc:cursor-force
 
     // draw
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 1; ctx.fillStyle = '#050508'; ctx.fillRect(0, 0, this.width, this.height);
     ctx.globalCompositeOperation = 'lighter';
+    // #region doc:draw-glyphs
     const atlas = this.atlas, acw = this.acw, ach = this.ach;
     for (let c = 0; c < cols; c++) {
       const head = this.head[c], trail = this.trail[c];
@@ -127,6 +138,7 @@ export default {
         ctx.drawImage(atlas, this.glyph[i] * acw, tint * ach, acw, ach, x + this.ox[i], r * ch + this.oy[i], cw, ch);
       }
     }
+    // #endregion doc:draw-glyphs
     // cursor glow
     ctx.globalAlpha = 1;
     const g = ctx.createRadialGradient(mx, my, 0, mx, my, 120);

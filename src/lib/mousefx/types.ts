@@ -14,6 +14,7 @@ export interface Pointer {
   dispose(): void;
 }
 
+// #region doc:effect-contract
 export interface EffectInit {
   container: HTMLElement;
   pointer: Pointer;
@@ -31,14 +32,19 @@ export interface Effect {
   dispose(): void;
   count?: number;
 }
+// #endregion doc:effect-contract
 
-export interface EffectDef {
+export interface EffectInfo {
   id: string;
   key: string;
   name: string;
   title: string;
   tech: string;
   desc: string;
+  file: string;   // source file below src/lib/mousefx
+}
+
+export interface EffectDef extends EffectInfo {
   load: () => Promise<{ default: Effect }>;
 }
 

@@ -1,0 +1,217 @@
+<Section id="overview">
+
+The cursor is a star. Thousands of small bodies orbit it, and each body leaves a short light trail. Slow bodies are blue, and fast bodies near the star are magenta and white. Behind them is a fixed starfield. A press of the button sends a shockwave that throws the bodies away from the star.
+
+The effect is plain canvas 2D with no physics library. The state is four `Float32Array` with one value for each body: `x`, `y`, `vx`, `vy`.
+
+The name N-BODY is not exact. In a real N-body simulation, each body attracts each other body, and the cost grows with N². This module does not do that. Only the star attracts the bodies. The bodies have no mass, do not attract each other, and do not collide. In physics terms, this is a central-force problem with N test bodies. The cost grows with N, and that is the reason that thousands of bodies are possible on the CPU.
+
+The element count in the statistics (`this.count`) is N, the number of bodies. `init` sets it one time: 3,200, or 1,400 when the viewport is narrower than 800 px. A body that leaves the screen is not deleted. It gets a new position, so N stays constant.
+
+</Section>
+
+<Section id="interaction">
+
+- **Move.** The star is at the smoothed pointer position (`pointer.sx`, `pointer.sy`), which follows the cursor with a time constant of 0.1 s. The bodies do not move with the star. When the star moves, near bodies get new, more eccentric orbits, and far bodies fall slowly to the new centre.
+- **Move fast.** The module does not read `pointer.speed`, `pointer.vx`, or `pointer.vy`. Speed has an effect only through the star position: bodies that the star goes near get a large, short acceleration and fly away on long orbits.
+- **Press edge.** On the first frame with the button down, `nova` is set to 1. It decreases by 1.6 for each second, so it is zero after 0.625 s. While it is more than zero, all bodies get a strong outward acceleration, the star glow is larger, and a white ring expands from the star.
+- **Hold the button.** The sign of the gravity changes and its strength is multiplied by 1.5. The star is a repulsor, and its glow gets an amber core. On release, the bodies fall to the star again.
+- **Idle.** After 2.5 s with no input, the shared pointer goes into autopilot and moves on a slow path. The star follows it.
+
+`update` reads the `reduced` flag. With reduced motion, the time step is multiplied by 0.6. The orbits, the decrease of `nova`, and the trail fade all run at 60% of the normal rate. The number of bodies and the forces do not change.
+
+There is no URL parameter. The only mobile branch is the number of bodies.
+
+</Section>
+
+<Section id="model">
+
+### Softened gravity from one centre
+
+For each body, the code computes the vector from the body to the star, `(dx, dy)`, and then:
+
+<Formula caption="GM = 2.2e6 px³/s². soft = 900 px² is the square of the softening length, so ε = 30 px. r is the true distance to the star.">{`d2 = dx² + dy² + soft          = r² + ε²
+d  = √d2
+a  = GM / d2
+v += (dx / d, dy / d) · a · hdt`}</Formula>
+
+`(dx / d, dy / d)` is not a unit vector, because `d` is the softened distance and not `r`. Its length is `r / d`. The acceleration that the code applies is thus:
+
+<Formula caption="Plummer softening. The power is 3/2 on d2, which is the third power of the softened distance d.">{`acc   = GM · (dx, dy) / (r² + ε²)^(3/2)
+|acc| = GM · r / (r² + ε²)^(3/2)`}</Formula>
+
+This is the field of a mass that is spread out over a radius of approximately ε. Far from the star it is the Newton law `GM / r²`. Near the star it has a maximum of approximately 940 px/s² at `r = ε / √2` (21 px), and it is zero at the centre. With no softening, the acceleration goes to infinity at the centre, and one time step there throws a body off the screen.
+
+### Other accelerations
+
+<Formula caption="cx, cy is the centre of the viewport. novaF is the value of nova on this frame, from 1 to 0.">{`hold  :  a = −1.5 · GM / d2
+nova  :  a = a − novaF · 3.5e7 / (d2 + 4000)
+centre:  v += (cx − x, cy − y) · 0.05 · hdt`}</Formula>
+
+- The nova term is a second softened inverse-square repulsion. Its constant, 3.5e7 px³/s², is 16 times `GM`. Because `d2` already contains `soft`, the denominator is `r² + 4900`. The maximum is approximately 4,300 px/s² at 35 px. The term acts on all bodies on the same frame. The white ring is only a drawing, not a force front.
+- The centre term is a weak spring to the centre of the viewport: 0.05 px/s² for each px of distance. It is not gravity. It keeps the swarm on the screen. For a star at the centre, spring and gravity are equal at approximately 350 px (`GM / r² = 0.05 · r`). Farther out, the spring is the stronger force.
+
+After these terms, the speed is limited to 1,200 px/s.
+
+### Integration
+
+<Formula caption="Semi-implicit (symplectic) Euler. The position step uses the new velocity.">{`sdt = min(dt, 1/30) · (reduced ? 0.6 : 1)
+hdt = sdt / sub                    sub = 2
+
+two times:
+  v = v + acc(x) · hdt
+  x = x + v · hdt`}</Formula>
+
+Explicit Euler moves the position with the old velocity, and each orbit then gains energy and becomes a spiral that goes out. The semi-implicit method is symplectic: the energy error stays bounded, and orbits stay closed, at the same cost. It is not leapfrog, because there is no half step between velocity and position.
+
+The two sub-steps make the step 1/120 s at 60 Hz. The error is largest near the star, where the acceleration changes quickly across a short distance. The star position is constant during the two sub-steps.
+
+### Start conditions
+
+Each body starts at a random angle `a` and at a radius `r = 80 + random · 0.55 · min(w, h)` from the star. The radius is uniform, not the area, so the disc is more dense near the star.
+
+<Formula caption="Circular orbit speed for a point mass, multiplied by a random factor from 0.85 to 1.15.">{`v  = √(GM / r) · (0.85 + 0.3 · random)
+vx = −sin(a) · v
+vy =  cos(a) · v`}</Formula>
+
+`√(GM / r)` is the speed at which gravity is equal to the centripetal acceleration `v² / r`: 166 px/s at 80 px, 86 px/s at 300 px. The direction `(−sin a, cos a)` is at 90° to the radius. All bodies turn in the same direction, clockwise on the screen because the y axis points down. A factor of 1 gives a circle, and other factors give ellipses. The escape speed is √2 times the circular speed, and 1.15 is below that, so all start orbits are closed.
+
+### Too far and too near
+
+A body that is more than 200 px out of the viewport gets a new state. It starts 10 px out of a random edge with a speed `v` of 60 to 180 px/s: `0.4 · v` in the direction of the star, plus `v` at 90° to that direction with a random sign. These bodies thus turn in the two directions, and they go around the star and not into it.
+
+There is no limit for a body that goes near the star. It is not deleted and it does not merge. The softening limits its acceleration, the speed limit bounds its velocity, and it goes through the centre and out on the other side.
+
+### Colour by speed
+
+The speed gives an index from 0 to 63: `min(63, floor(speed / 620 · 63))`. The index selects a colour from a table that goes from deep blue through cyan and magenta to white. The same index sets the alpha (0.45 to 1) and the size (1.2 to 2.8 px). Orbit speed decreases with distance, so the colour shows the field: a white core, a cyan ring, a blue outer region.
+
+</Section>
+
+<Section id="pipeline">
+
+<Pipeline>
+  <Step title="Time step" reads="dt, reduced" writes="sdt, hdt">
+    `dt` is limited to 1/30 s and multiplied by 0.6 for reduced motion. `hdt` is one half of the result.
+  </Step>
+  <Step title="Nova state" reads="pointer.down, wasDown, nova" writes="nova, wasDown, novaF, repel">
+    A press edge sets `nova` to 1. `novaF` keeps the value for this frame, and `nova` then decreases by `1.6 · sdt`.
+  </Step>
+  <Step title="Integrate, two sub-steps" reads="pointer.sx, pointer.sy, x, y, vx, vy" writes="x, y, vx, vy">
+    For each body: softened gravity or repulsion, nova term, centre spring, speed limit, then the position step.
+  </Step>
+  <Step title="Fade the trails" reads="trail canvas" writes="trail canvas">
+    A full-canvas `destination-out` fill with alpha `1 − 0.82^(60 · sdt)` removes that part of the alpha of each pixel. The blend mode is then set to `lighter`.
+  </Step>
+  <Step title="Respawn and sort" reads="x, y, vx, vy" writes="buckets, state of respawned bodies">
+    A body more than 200 px out of the viewport gets a new state and is not drawn on this frame. Each other body goes into one of 64 buckets by its speed.
+  </Step>
+  <Step title="Draw the bodies" reads="buckets, lut, x, y" writes="trail canvas">
+    For each bucket that is not empty: set colour, alpha, and size one time, then draw one square for each body.
+  </Step>
+  <Step title="Draw the star" reads="pointer.sx, pointer.sy, pointer.down, novaF" writes="trail canvas">
+    A radial gradient of radius `70 + 260 · novaF` px, plus 30 px while the button is down. While `novaF` is more than zero, a white ring of radius `(1 − novaF) · 520` px is drawn. The blend mode then goes back to `source-over`.
+  </Step>
+</Pipeline>
+
+The starfield canvas is not in this list. It is drawn in `resize` only: a dark fill, one radial gradient for the nebula, and 700 stars of 0.8, 1.4, or 2.2 px. `resize` also clears the trail canvas. It does not move the bodies.
+
+</Section>
+
+<Section id="code">
+
+### Start orbits
+
+The direction vector `(−sin a, cos a)` is the position vector `(cos a, sin a)` turned by 90°.
+
+<Excerpt file="effects/orbits.js" region="seed-orbit" lang="js" page="orbits" />
+
+### Respawn from an edge
+
+The `+ 1` in `d` prevents a division by zero. The tangential part `(−dy / d, dx / d)` is 2.5 times the radial part, so the new body goes into an orbit and does not fall straight in.
+
+<Excerpt file="effects/orbits.js" region="respawn-edge" lang="js" page="orbits" />
+
+### Press edge and hold
+
+`wasDown` makes the difference between the press edge and the hold. `novaF` is read before `nova` decreases, so the first frame of the shockwave has the full value of 1.
+
+<Excerpt file="effects/orbits.js" region="nova-state" lang="js" page="orbits" />
+
+### The force and the step
+
+The velocity lines come before the position line: that order makes the method semi-implicit. There is no loop across pairs of bodies. The only position that a body reads, apart from its own, is `sx, sy`.
+
+<Excerpt file="effects/orbits.js" region="gravity-step" lang="js" page="orbits" />
+
+### Trail fade
+
+In `destination-out`, the colour of the fill is not used. Only its alpha is.
+
+<Excerpt file="effects/orbits.js" region="trail-fade" lang="js" page="orbits" />
+
+### Draw by speed bucket
+
+The bodies are sorted into 64 arrays first, so `fillStyle` and `globalAlpha` are set 64 times at most, not 3,200 times. The arrays are made one time and emptied with `length = 0`. The respawn test is in the same loop.
+
+<Excerpt file="effects/orbits.js" region="speed-buckets" lang="js" page="orbits" />
+
+</Section>
+
+<Section id="constants">
+
+<ParamTable>
+  <Param name="GM" literal="return 2.2e6" controls="Strength of the star in px³/s². It sets all orbit speeds: √(GM / r)." why="One orbit at 200 px takes 12 s, slow enough to follow with the eye. A lower value makes the centre spring stronger than the star at most distances, and the swarm ignores the cursor. A higher value puts more bodies at the speed limit near the star, where two sub-steps are too coarse." />
+  <Param name="softening" literal="soft = 900" controls="ε² in px², added to the square of the distance. ε = 30 px." why="With zero, the acceleration goes to infinity at the star, and one step of 1/120 s throws a body off the screen. With 900, the maximum is approximately 940 px/s². A much larger value makes the inner orbits slow, and the bright core disappears." />
+  <Param name="sub-steps" literal="sub = 2" controls="Integration steps for each frame. The step is 1/120 s at 60 Hz." why="At the speed limit a body moves 10 px in one sub-step, which is small against the 30 px softening length. One step doubles that. Each added sub-step costs N more loop passes." />
+  <Param name="step limit, reduced motion" literal="Math.min(dt, 1 / 30) * (this.reduced ? 0.6 : 1)" controls="Largest time step, and the rate of the simulation with reduced motion." why="After a pause of the tab, dt is very large, and one large step throws all near bodies out of their orbits. The factor 0.6 slows all motion and keeps the orbits the same, because a smaller step only makes the integration more accurate." />
+  <Param name="bodies" literal="mobile ? 1400 : 3200" controls="N, the number of bodies and the value of this.count." why="The cost is linear in N: two force computations and one fillRect for each body and frame. A phone has less area and a slower CPU, so 1,400 gives a similar density at a lower cost." />
+  <Param name="start radius" literal="80 + Math.random() * Math.min(w, h) * 0.55" controls="Distance from the star at the start, in px." why="Nearer than 80 px, the softened force is much weaker than the point-mass force that the speed formula assumes (it is 18% weaker at 80 px), so bodies would start too fast. 0.55 of the short side fills the viewport." />
+  <Param name="speed spread" literal="(0.85 + Math.random() * 0.3)" controls="Random factor on the circular speed at the start." why="With a factor of exactly 1, all orbits are circles and the swarm looks like rigid rings. ±15% gives ellipses with an eccentricity up to approximately 0.3, so orbits cross. The factor must stay below √2, or the body escapes." />
+  <Param name="repulsor" literal="a = -a * 1.5" controls="Sign and strength of the star while the button is down." why="The repulsion must stop bodies that fall in at orbit speed. A factor of 1.5 stops them farther out than a factor of 1, so there is a clear empty region around the cursor." />
+  <Param name="nova" literal="novaF * 3.5e7 / (d2 + 4000)" controls="Outward acceleration of the shockwave in px/s², with 4000 px² of added softening." why="The impulse lasts only 0.625 s, so it must be much stronger than gravity to show. Without the added softening, all bodies near the star get to the speed limit in one frame and leave as one thin shell." />
+  <Param name="centre pull" literal="(cx - x[i]) * 0.05 * hdt" controls="Spring to the centre of the viewport, 0.05 px/s² for each px." why="Gravity at 800 px is only 3 px/s², so bodies that a nova throws out do not come back in a useful time. The spring brings them back. A larger value makes the swarm orbit the screen centre and not the star." />
+  <Param name="speed limit" literal="sp2 > 1.44e6" controls="Maximum speed, 1,200 px/s (the square is 1.44e6)." why="At a higher speed, one sub-step jumps across the region where the force changes, and the orbit is wrong. The limit is well above 620 px/s, where the colour is already white, so it does not change the look." />
+  <Param name="trail decay" literal="Math.pow(0.82, sdt * 60)" controls="Part of the trail alpha that stays after 1/60 s." why="0.82 leaves 5% after 0.25 s, so a body at 100 px/s has a trail of approximately 25 px. A higher value makes long trails that add up to white near the star, because the blend is additive. A lower value shows only dots." />
+</ParamTable>
+
+</Section>
+
+<Section id="performance">
+
+All the work is on the CPU, and it is linear in the number of bodies. There is no pair loop.
+
+- **Scales with N.** The force loop runs 2 × 3,200 = 6,400 times for each frame, with one square root each time. The draw loop adds 3,200 square roots for the colour index and 3,200 `fillRect` calls, with 64 state changes at most.
+- **Scales with pixels.** The `destination-out` fill touches each pixel of the trail canvas on each frame. The star gradient covers a square of 140 px, and as much as 720 px at the start of a nova. The browser also blends the transparent trail canvas on the starfield canvas.
+
+Why two canvases: the usual way to fade trails is to fill the canvas with the background colour at a low alpha. That makes the canvas opaque, so a background picture must be drawn again on each frame. Here the background is a gradient and 700 stars. `destination-out` decreases the alpha of the trail pixels and adds no colour. The trail canvas fades to transparent, and the starfield below it is drawn only in `resize`. The price is one more full-size canvas.
+
+Limits that the module applies:
+
+- The device pixel ratio is limited to 2. The value is set in `init`. `resize` does not read its `dpr` argument.
+- The starfield canvas is opaque (`alpha: false`). Only the trail canvas has an alpha channel.
+- 1,400 bodies and not 3,200 when the viewport is narrower than 800 px at `init`. A later resize does not change N.
+- The frame loop makes no new arrays.
+- There is no resolution limit other than the dpr limit, and no fallback path.
+
+<Measured
+  conditions="M-series Mac, Chromium, device pixel ratio 2. ms is the CPU time of update() only."
+  head={['viewport', 'build', 'fps', 'update ms', 'bodies']}
+  rows={[
+    ['1024 × 768', 'static page (before Next.js)', '60', '1.1', '3,200'],
+    ['1710 × 930', 'Next.js development', '60', '1.0', '3,200'],
+    ['1710 × 930', 'Next.js production', '60', '1.8', '3,200'],
+  ]}
+/>
+
+</Section>
+
+<Section id="references">
+
+- Wikipedia, [N-body simulation, section Softening](https://en.wikipedia.org/wiki/N-body_simulation#Softening). The source of the force law: `r² + ε²` replaces `r²`. The page also describes the real N-body problem with pair forces, which this module does not compute.
+- Wikipedia, [Plummer model](https://en.wikipedia.org/wiki/Plummer_model). The mass distribution whose field is the exact form in the code.
+- Wikipedia, [Semi-implicit Euler method](https://en.wikipedia.org/wiki/Semi-implicit_Euler_method). The integration method, and why it keeps the energy bounded.
+- Wikipedia, [Circular orbit](https://en.wikipedia.org/wiki/Circular_orbit). The derivation of the start speed `√(GM / r)`.
+- MDN, [globalCompositeOperation](https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/globalCompositeOperation). The `destination-out` mode for the fade and the `lighter` mode for the glow.
+
+</Section>

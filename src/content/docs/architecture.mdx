@@ -1,0 +1,178 @@
+<Section id="contract" title="Effect contract">
+
+An effect is a plain object with four functions and one number. It does not know about React, about the HUD, or about the other effects.
+
+<Excerpt file="types.ts" region="effect-contract" lang="ts" page="architecture" />
+
+- `init` gets a container element. The effect makes its own canvas (or canvases) and adds them to the container. It must not draw anywhere else.
+- `update(dt, t)` runs one time for each frame. `dt` is the time step in seconds, and `t` is the simulation time. The effect does the physics and the drawing in this one call.
+- `resize` gets the new viewport size in CSS px and the device pixel ratio.
+- `dispose` removes the canvases and releases GPU resources. The three WebGL effects also force a context loss here, because browsers limit the number of live WebGL contexts.
+- `count` is the number of simulated elements, for the statistics.
+
+Each effect module is a singleton: `export default { … }` with its state on `this`. The sequence `init` → `dispose` → `init` on the same object must work, and it does, because `init` makes all state again.
+
+</Section>
+
+<Section id="pointer" title="Shared pointer">
+
+All effects read one pointer object. It gives them the same view of the mouse, so an effect has no event listeners of its own.
+
+<Table
+  head={['field', 'meaning']}
+  rows={[
+    ['`x`, `y`', 'The effective pointer in CSS px. This is the real mouse, or the autopilot when the visitor is idle.'],
+    ['`sx`, `sy`', 'A smoothed position (low-pass filter). Effects that must not jitter use this.'],
+    ['`vx`, `vy`, `speed`', 'Smoothed velocity in px/s, and its length.'],
+    ['`down`, `downTime`', 'Button state, and the time of the last press.'],
+    ['`idle`', 'True while the autopilot moves the pointer.'],
+    ['`rx`, `ry`', 'The last real mouse position.'],
+  ]}
+/>
+
+### Autopilot
+
+A background that freezes when the mouse stops looks broken. After 2.5 s with no `pointermove`, the pointer starts to follow a slow Lissajous path around a point a little above the screen centre. The change is eased over the next 2.5 s: `k` goes from 0 to 1, and the target is a blend of the path and the last real position. The first real movement sets `x, y` back to the mouse immediately.
+
+<Excerpt file="pointer.ts" region="autopilot" lang="ts" page="architecture" />
+
+### Velocity and smoothing
+
+The raw velocity is the position difference divided by `dt`. A tab switch or a window focus change can move the pointer across the full screen in one frame, which is a velocity of 100,000 px/s or more. Effects that add pointer velocity to their physics (`fluid`, `gravity-well`, `ascii`) would explode, so the raw value is limited to 5000 px/s before the filter.
+
+The two filters use `1 − e^(−dt · rate)` as the blend factor. This gives the same response time at all frame rates, which a fixed factor such as 0.2 does not.
+
+<Excerpt file="pointer.ts" region="velocity" lang="ts" page="architecture" />
+
+</Section>
+
+<Section id="frame-loop" title="Frame loop">
+
+One `requestAnimationFrame` loop drives the pointer and the active effect. It is outside React: no component renders for each frame. React state changes only when the effect changes, and two times for each second for the statistics.
+
+<Excerpt file="controller.ts" region="frame-loop" lang="ts" page="architecture" />
+
+- **Time step limit.** `dt` is limited to 0.05 s. After a long frame (garbage collection, a slow shader compile), an unlimited `dt` would put a large step into each physics integrator, and spring and gravity systems become unstable with large steps. Most effects limit their own step again to 1/30 s.
+- **Pause while hidden.** Browsers stop `requestAnimationFrame` in hidden tabs, but they give a very large `dt` on the first frame after that. The loop thus stops on `visibilitychange`, and it sets `last` to the current time before it starts again, so the first step is a normal one.
+- **Statistics.** `ms` is the CPU time of `update()` only. For the WebGL effects this is near zero, because the GPU does the work after the call returns. The frame rate is the more useful number for those effects.
+
+</Section>
+
+<Section id="loading" title="Selection and on-demand loading">
+
+The catalogue (`catalogue.ts`) is plain data. The registry adds one literal `import()` for each effect, so the bundler makes one chunk for each effect, and one more for three.js. A visitor who looks only at `matrix` never downloads three.js.
+
+<Excerpt file="controller.ts" region="select" lang="ts" page="architecture" />
+
+Three details in `select` prevent defects that are hard to find:
+
+- The `loading` flag drops a second selection while an import is in flight. Without it, two fast key presses can start two effects.
+- `destroyed` is examined again **after** the `await`. React Strict Mode mounts, unmounts, and mounts again in development. The import of the first mount can resolve after its controller is destroyed, and it must not call `init` then.
+- The previous effect is disposed, and the container is emptied, before the new `init`. If `init` throws, there is no current effect, the error text goes to the UI, and the next selection works.
+
+</Section>
+
+<Section id="resize" title="Resize and pixel ratio">
+
+Resize events arrive many times for each second while the visitor drags a window edge. A resize makes new canvases or render targets, which is expensive, so the controller waits until 60 ms pass with no new event.
+
+The controller limits the device pixel ratio to 2. Each effect can apply a lower limit: the WebGL effects use 1.5, and `nebula` also limits its internal width, because its cost is for each pixel.
+
+<ParamTable>
+  <Param name="idle time" file="pointer.ts" literal="const IDLE_MS = 2500" controls="Time with no pointer movement before the autopilot starts." why="Shorter, and the autopilot starts while a visitor reads and holds the mouse still. Longer, and the background looks frozen." />
+  <Param name="velocity limit" file="pointer.ts" literal="if (isp > 5000)" controls="Largest raw pointer velocity, in px/s." why="A fast real movement is approximately 3000 px/s. Values above 5000 come from focus changes, not from a hand." />
+  <Param name="velocity filter" file="pointer.ts" literal="Math.exp(-dt * 12)" controls="Rate of the velocity low-pass filter, in 1/s." why="A time constant of approximately 80 ms: fast enough that a flick still reads as a flick, slow enough to remove the noise of single pointer events." />
+  <Param name="position filter" file="pointer.ts" literal="Math.exp(-dt * 10)" controls="Rate of the smoothed position sx, sy." why="A little slower than the velocity filter, so that objects that follow sx, sy trail the cursor visibly." />
+  <Param name="time step limit" file="controller.ts" literal="if (dt > 0.05) dt = 0.05;" controls="Largest dt that an effect receives, in seconds." why="0.05 s is 20 fps. Below that frame rate the simulation runs slower than real time, which is better than an unstable simulation." />
+  <Param name="resize debounce" file="controller.ts" literal="}, 60);" controls="Quiet time in ms before resize() is called." why="Longer than one frame, and short enough that the visitor does not see a stretched canvas after the drag ends." />
+  <Param name="pixel ratio limit" file="controller.ts" literal="Math.min(devicePixelRatio || 1, 2)" controls="Largest device pixel ratio that effects receive." why="A ratio of 3 has 2.25 times the pixels of a ratio of 2, and the difference is not visible in soft, glowing images." />
+  <Param name="statistics interval" file="controller.ts" literal="if (hudT > 0.5)" controls="Time between statistics updates, in seconds." why="Numbers that change on each frame cannot be read, and each update is a React render." />
+</ParamTable>
+
+</Section>
+
+<Section id="reduced-motion" title="Reduced motion">
+
+The controller reads `prefers-reduced-motion: reduce` one time and gives the result to `init` as `reduced`. What an effect does with it is the decision of the effect:
+
+<Table
+  head={['effect', 'what `reduced` changes']}
+  rows={[
+    ['`gravity-well`', 'time step × 0.5'],
+    ['`matrix`', 'time step × 0.6'],
+    ['`orbits`', 'time step × 0.6'],
+    ['`ascii`', 'time step × 0.5'],
+    ['`warp`', 'base star speed 2 and not 5'],
+    ['`fluid`, `tendrils`, `nebula`', 'nothing (the flag is not read in `update`)'],
+  ]}
+/>
+
+The docs pages go further than the showcase: with reduced motion set, the background of a docs page does not start until the visitor starts it.
+
+</Section>
+
+<Section id="teardown" title="Teardown">
+
+The first version of this project was a static page that never unmounted, and it had no teardown. In a React app the runtime must be able to go away fully: on navigation, in Strict Mode, and on Fast Refresh.
+
+<Excerpt file="controller.ts" region="teardown" lang="ts" page="architecture" />
+
+All listeners of the controller share one `AbortController` signal, and the pointer has its own. One `abort()` removes them all, so a new listener cannot be forgotten in the cleanup.
+
+The controller lifetime is bound to the container **node**, not to a component. The `#fx` element has a ref callback that makes the controller and returns `destroy` as its cleanup. An earlier version made the controller in a `useEffect` of a parent component. A Fast Refresh then replaced the `#fx` node but did not run that effect again, and the controller drew into a node that was no longer in the document. With the ref callback, this condition cannot occur.
+
+</Section>
+
+<Section id="modes" title="Showcase mode and fixed-effect mode">
+
+<Table
+  head={['', 'showcase mode', 'fixed-effect mode']}
+  rows={[
+    ['used by', 'the showcase at `/`', 'the background of each effect docs page'],
+    ['keys `1`–`8`, `Space`, arrows, `h`', 'select effects, hide the UI', 'not captured (`Space` scrolls the page)'],
+    ['URL hash', 'read and written (`#fluid`)', 'not touched (it is a heading anchor)'],
+    ['`window.mousefx`', 'set', 'not set'],
+    ['pointer, frame loop, resize, statistics, teardown', 'the same code', 'the same code'],
+  ]}
+/>
+
+The two modes are one `createController` function with a `mode` option. A second, smaller runtime for the docs would mean two frame loops and two teardown paths to keep correct.
+
+</Section>
+
+<Section id="embedding" title="Embed one effect">
+
+The modules in `src/lib/mousefx` have no React dependency. To put one effect behind a different site, copy that directory (the three.js effects need `three@0.160`), make a fixed full-viewport container with `pointer-events: none`, and drive the effect with your own loop:
+
+```ts
+import { createPointer } from './mousefx/pointer';
+import fx from './mousefx/effects/fluid.js';
+
+const container = document.getElementById('fx')!;
+const pointer = createPointer();
+fx.init({ container, pointer, width: innerWidth, height: innerHeight, dpr: devicePixelRatio, reduced: false });
+
+let last = performance.now(), t = 0, raf = 0;
+function frame(now: number) {
+  raf = requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (now - last) / 1000); last = now; t += dt;
+  pointer.update(dt, t);
+  fx.update(dt, t);
+}
+raf = requestAnimationFrame(frame);
+
+const onResize = () => fx.resize(innerWidth, innerHeight, devicePixelRatio);
+addEventListener('resize', onResize);
+
+// when the page or the component goes away:
+function stop() {
+  cancelAnimationFrame(raf);
+  removeEventListener('resize', onResize);
+  pointer.dispose();
+  fx.dispose();
+}
+```
+
+Or use `createController({ container, mode: 'fixed', effectId: 'fluid' })`, which adds the pause while hidden, the resize debounce, and the statistics, and returns `destroy()`.
+
+</Section>

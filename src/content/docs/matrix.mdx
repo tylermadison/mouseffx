@@ -1,0 +1,211 @@
+<Section id="overview">
+
+Green columns of half-width katakana, digits, and symbols run down a dark screen. The cursor opens a hole in the text: glyphs near it move out of their grid positions, become white, and change to other characters. When the cursor goes away, each glyph swings back to its cell and its colour cools through amber to green.
+
+The effect is plain canvas 2D. The viewport is a grid of character cells, and each cell is a spring-mass with an offset from its rest position. The glyphs do not fall. Each column has a head position that moves down, and the brightness of a cell is a function of its distance behind that head. The frame loop draws no text: all glyphs are drawn one time into an atlas canvas, and each visible glyph is one `drawImage` copy.
+
+The element count in the statistics (`this.count`) is the number of cells, `cols × rows`. It includes the dark cells that are not drawn, because each cell is integrated on each frame. The cell size comes from the font size: `cw = round(0.62 · fs)` and `ch = round(1.15 · fs)`, which is 10 × 18 px for `fs = 16`. Then `cols = ceil(width / cw) + 1` and `rows = ceil(height / ch) + 1`. A 1710 × 930 viewport gives 172 × 53 = 9,116 cells.
+
+</Section>
+
+<Section id="interaction">
+
+- **Move.** Each cell centre that is less than 170 px from the cursor gets a force that points away from the cursor. The same cells get heat and a chance to change their glyph.
+- **Move fast.** The pointer velocity (`pointer.vx`, `pointer.vy`) adds a second force in the direction of travel. A fast sweep drags the glyphs with it. A slow cursor makes a symmetrical hole.
+- **Hold the button.** The sign of the radial force changes, so the cells are pulled to the cursor. A tangential force is added, which turns the cells clockwise on the screen. The glow at the cursor changes from green to amber. A press edge has no effect of its own.
+- **Idle.** After 2.5 s with no input, the shared pointer goes into autopilot. The module uses the effective position `pointer.x`, `pointer.y`, so the hole moves along the slow autopilot path.
+
+`update` reads the `reduced` flag. With reduced motion, the time step is multiplied by 0.6, so the rain, the springs, the cursor impulses, and the heat decay run at 60% speed. The glyph flicker and the glyph scramble do not use the time step and do not slow down.
+
+There is no URL parameter. The only mobile branch is a font size of 14 px (cells of 9 × 16 px) for a viewport narrower than 800 px. The font size, the pixel ratio, and the atlas are set in `init`, and `resize` does not change them. `resize` makes all arrays again, so the simulation starts again when the window size changes.
+
+</Section>
+
+<Section id="model">
+
+### One spring for each cell
+
+A cell stores an offset `(ox, oy)` from its rest position and a velocity `(vx, vy)`. The mass is 1, so force and acceleration are the same number.
+
+<Formula caption="Hooke's law with linear damping. k = 55 s⁻² is the stiffness, damp = 7 s⁻¹ the damping. The y axis is the same.">{`ax = −k · ox − damp · vx
+
+vx = vx + ax · sdt
+ox = ox + vx · sdt        (uses the new vx)`}</Formula>
+
+The velocity is updated first, and the position then uses the new velocity. This is the semi-implicit (symplectic) Euler method. The explicit Euler method uses the old velocity for the position, and it adds a little energy to an oscillator on each step. That error acts as negative damping, and its size changes with the frame rate. The semi-implicit form costs the same and does not have this error. It is stable while `√k · sdt` is less than 2, and here the product is 0.25 at most.
+
+The constants give an underdamped spring with a damping ratio of `damp / (2 · √k)` = 0.47. A released glyph swings back with a period of approximately 0.96 s and goes past its cell by approximately 19% of the displacement. The amplitude falls with `e^(−3.5 · t)`, so after two swings the movement is not visible.
+
+### Cursor force
+
+A second loop adds impulses to the velocity of the cells near the cursor. The distance uses the displaced centre of the cell.
+
+<Formula caption="R = 170 px. push is +1, or −1 while the button is held. p.vx and p.vy are the pointer velocity in px/s.">{`dx = (c · cw + cw/2 + ox) − p.x        dy = the same for y
+d  = √(dx² + dy²) + 0.001              cells with d² > R² are skipped
+f  = 1 − d / R                         1 at the cursor, 0 at R
+
+vx += ( dx/d · f² · 2600 · push  +  0.35 · p.vx · f² · 6 ) · sdt
+vy += ( dy/d · f² · 2600 · push  +  0.35 · p.vy · f² · 6 ) · sdt
+
+while held:   vx += −dy/d · f · 900 · sdt
+              vy +=  dx/d · f · 900 · sdt`}</Formula>
+
+- The radial term is 2,600 px/s² at the cursor. The falloff is quadratic (`f²`): 25% at half the radius, and zero with zero slope at `R`, so the border of the force field is not visible.
+- A cursor that does not move holds a glyph where spring and force are equal: `55 · o = 2600 · f²`. For a cell with its rest position at the cursor, the offset `o` is approximately 31 px. That is the radius of the hole.
+- The drag term is `2.1 · f²` times the pointer velocity. The pointer module limits that velocity to 5,000 px/s, so the drag can be four times the radial term.
+- The swirl is perpendicular to the radius, and its falloff is linear (`f`). Where `f` is less than 0.35, `900 · f` is larger than `2600 · f²`, so the outer cells mostly orbit and the inner cells mostly fall in.
+
+### Heat
+
+`heat` is a number from 0 to 1 for each cell. Inside the radius it is set to `max(heat, f)`, so it rises immediately. On each frame it goes down by `1.4 · sdt`. The decay is linear: a cell at the cursor is cold after 0.71 s. Heat does not depend on the button.
+
+In the draw step, a cell with heat above 0.02 has a brightness of at least `heat`, and the heat alone selects the colour: white above 0.55, amber above 0.25, green below that. Around a still cursor, this is a white disc of 76 px radius, an amber ring out to 127 px, and a green ring out to `R`. Behind a cursor that moves, the same colours occur in time order.
+
+### Glyph changes
+
+The flicker picks 2% of the cell count at random on each frame and gives each pick a new glyph. At 60 frames for each second, a cell changes approximately one time in 0.8 s. The scramble works inside the cursor radius: a cell changes with a probability of `0.5 · f` on each frame. Both are counted for each frame, not for each second, so they are faster on a 120 Hz display.
+
+### Rain columns
+
+Each column has a `head` (a row position, not an integer), a `speed` of 6 to 24 rows/s (108 to 432 px/s with 18 px rows), and a `trail` of 6 to 28 rows. On each frame, `head += speed · sdt`. When `head − trail` is larger than `rows`, the full trail is below the bottom edge. The column then gets a new speed and trail, and its head starts 0 to 30 rows above the top edge, so that the columns do not start again together. At `init` the heads are at random rows.
+
+<Formula caption="Brightness of row r in a column. It is used as globalAlpha.">{`dist = head − r                       0 ≤ dist ≤ trail
+b    = (1 − dist / trail)² · 0.9 + 0.1`}</Formula>
+
+The square makes the brightness fall quickly behind the head and then stay dim. The cell with `dist` less than 1 is the head glyph, which uses the pale green atlas row.
+
+</Section>
+
+<Section id="pipeline">
+
+<Pipeline>
+  <Step title="Limit the time step" reads="dt, reduced" writes="sdt">
+    `sdt = min(dt, 1/30)`, multiplied by 0.6 if reduced motion is on. The `t` argument is not used.
+  </Step>
+  <Step title="Advance the rain heads" reads="speed, trail" writes="head, speed, trail">
+    One addition for each column. A column whose trail is fully below the bottom edge is reset.
+  </Step>
+  <Step title="Flicker" reads="cell count" writes="glyph">
+    2% of the cell count get a new random glyph index.
+  </Step>
+  <Step title="Integrate the springs and cool the heat" reads="ox, oy, vx, vy, heat" writes="ox, oy, vx, vy, heat">
+    One pass through all `cols × rows` cells, which includes the cells at rest.
+  </Step>
+  <Step title="Apply the cursor force" reads="pointer.x, y, vx, vy, down; ox, oy" writes="vx, vy, heat, glyph">
+    Only the cells in the bounding box of the cursor circle are examined. The impulses go into the velocity after the integration, so they move the cells in the next frame.
+  </Step>
+  <Step title="Clear" reads="" writes="canvas">
+    The full canvas is filled with `#050508`. The trails are calculated. They are not a fade of old pixels.
+  </Step>
+  <Step title="Draw the glyphs" reads="head, trail, heat, ox, oy, glyph, atlas" writes="canvas">
+    The blend mode is `lighter` (additive). Each cell that has something to show is one `drawImage` from the atlas.
+  </Step>
+  <Step title="Draw the cursor glow" reads="pointer.x, pointer.y, pointer.down" writes="canvas">
+    A radial gradient of 120 px radius, still additive. Green with alpha 0.22, or amber with alpha 0.35 while the button is held.
+  </Step>
+  <Step title="Draw the vignette" reads="vignette canvas" writes="canvas">
+    The blend mode goes back to `source-over`. The vignette is a 256 × 256 canvas with a radial gradient from clear to 75% background colour. `resize` makes it, and this step stretches it across the viewport.
+  </Step>
+</Pipeline>
+
+</Section>
+
+<Section id="code">
+
+### The glyph atlas
+
+The atlas has a column for each of the 75 characters in `GLYPHS` and a row for each of the 5 colours in `TINTS`. With a 16 px font and a pixel ratio of 2 it is 1,500 × 180 device pixels. Look at `shadowBlur`: rows 2, 3, and 4 (pale green, white, amber) get a glow of 6 px. A blur is an expensive operation of canvas 2D. Here it is paid 225 times in `init` and never in the frame loop. If the JetBrains Mono font is not available at that moment, the atlas keeps the glyphs of the next font in the list.
+
+<Excerpt file="effects/matrixRain.js" region="atlas" page="matrix" />
+
+### The grid and its arrays
+
+All state is in flat typed arrays with the index `i = r · cols + c`. The glyph index is a `Uint8Array`, which is sufficient for 75 characters. The three rain arrays have one entry for each column.
+
+<Excerpt file="effects/matrixRain.js" region="grid" page="matrix" />
+
+### Rain and flicker
+
+The rain step does not touch the cells. The reset condition subtracts the trail length, so a column starts again only when its last dim glyph is off the screen.
+
+<Excerpt file="effects/matrixRain.js" region="rain-step" page="matrix" />
+
+### The spring loop
+
+Look at the order in the loop body: acceleration from the old state, then velocity, then position from the new velocity. The lines that calculate `c0`, `c1`, `r0`, and `r1` belong to the next excerpt. They convert the cursor circle to a range of columns and rows.
+
+<Excerpt file="effects/matrixRain.js" region="springs" page="matrix" />
+
+### The cursor force
+
+`dx / d` and `dy / d` are the unit vector from the cursor to the cell, and `(−dy, dx) / d` is that vector turned by 90°. The `1e-3` prevents a division by zero. The bounding box comes from the rest grid, but the distance test uses the displaced position, so a cell that is far from its rest position can be in the circle and get no force.
+
+<Excerpt file="effects/matrixRain.js" region="cursor-force" page="matrix" />
+
+### Drawing from the atlas
+
+The brightness `b` goes into `globalAlpha`, and the colour comes from the atlas row. Thus five rows are sufficient for all brightness levels. The tint row is chosen in this order. A cell in a trail gets row 1, or row 2 if it is the head. Heat above 0.02 overrides that with row 3, 4, or 1. A cell with no rain and no heat is drawn only if its offset is more than 2 px, with row 0 (dark green) at alpha 0.18, so that a glyph that swings back stays visible. All other cells go to `continue` and cost no draw call.
+
+<Excerpt file="effects/matrixRain.js" region="draw-glyphs" page="matrix" />
+
+</Section>
+
+<Section id="constants">
+
+<ParamTable>
+  <Param name="font size" literal="this.fs = width < 800 ? 14 : 16;" controls="Font size in px, and through it the cell size and the cell count." why="The cell count goes with 1 / fs². A smaller font gives more springs and more blits for each frame, and a larger font gives coarse rain with few columns. 14 px keeps approximately 45 columns on a phone that is 390 px wide." />
+  <Param name="cell size" literal="this.cw = Math.round(fs * 0.62); this.ch = Math.round(fs * 1.15);" controls="Cell width and height as a fraction of the font size." why="0.62 em is near the advance width of a monospace font. A lower value makes adjacent glyphs overlap, which adds up to bright spots in the additive blend. A higher value opens gaps between the columns. 1.15 keeps the glyphs of a column close, so a trail reads as one line." />
+  <Param name="spring" literal="k = 55, damp = 7" controls="Stiffness in s⁻² and damping in s⁻¹ of each cell." why="The damping ratio is 0.47. With damp at 14.8 or more there is no overshoot and the glyphs creep back with no life. With damp near 2 the grid rings for seconds after each cursor pass. A higher k makes the hole smaller for the same force." />
+  <Param name="radius" literal="const R = 170" controls="Radius of the cursor force, the heat, and the scramble, in px." why="The number of cells in the cursor loop goes with R². The radius must be much larger than the 31 px hole, because the heat rings (white to 76 px, amber to 127 px) use the same falloff." />
+  <Param name="radial force" literal="f2 * 2600 * push" controls="Acceleration at the cursor in px/s². Repel, or pull while the button is held." why="Against k = 55 it gives a static offset of 31 px, which is approximately three columns. A much lower value cannot move a glyph out of its own cell. A much higher value throws glyphs across many columns and the text cannot be read." />
+  <Param name="pointer drag" literal="const mvx = p.vx * 0.35, mvy = p.vy * 0.35;" controls="Part of the pointer velocity that becomes a force. Together with the factor 6 in the force line: 2.1 · f² · velocity." why="With zero drag a moving cursor makes the same round hole as a still cursor. With 2.1 s⁻¹, a sweep of 1,250 px/s is as strong as the radial force, so only fast movement makes a wake." />
+  <Param name="swirl" literal="-dy / d * f * 900 * sdt" controls="Tangential acceleration in px/s² while the button is held." why="The linear falloff makes the swirl stronger than the pull in the outer part of the radius (f below 0.35). With the quadratic falloff of the pull, the turn would be visible only in the centre, where the glyphs are already a knot." />
+  <Param name="heat decay" literal="this.heat[i] - sdt * 1.4" controls="Heat loss for each second. Full heat is gone in 0.71 s." why="A slower decay leaves the full path of the cursor white, and the additive blend saturates. A faster decay makes the trail shorter than the hole, and the cooling through amber is not visible." />
+  <Param name="heat colours" literal="heat > 0.55 ? 3 : (heat > 0.25 ? 4 : 1)" controls="Heat limits for the white and the amber atlas rows." why="Heat is the linear falloff, so the limits are radii: 0.55 is 76 px and 0.25 is 127 px. The amber band must be wide enough to see for the 0.2 s in which a cell cools through it." />
+  <Param name="flicker" literal="const flips = (n * 0.02) | 0;" controls="Number of random glyph changes for each frame, as a part of the cell count." why="At zero the columns are static text. At a high rate each glyph changes before the eye can read it, and the rain looks like noise. 2% is one change for each cell in approximately 50 frames." />
+  <Param name="rain speed" literal="this.speed[c] = 6 + Math.random() * 18;" controls="Speed of a column head in rows for each second. The trail length has the same form, 6 to 28 rows." why="The factor of four between the slowest and the fastest column gives the depth of the rain. If all columns have one speed, the heads make horizontal lines." />
+  <Param name="step limit" literal="Math.min(dt, 1 / 30) * (this.reduced ? 0.6 : 1)" controls="Largest time step, and the reduced-motion factor." why="After a pause of the tab, dt can be seconds. An impulse of 2,600 px/s² times such a step throws the glyphs off the screen. The limit also keeps the spring far below the stability limit of the integration." />
+</ParamTable>
+
+</Section>
+
+<Section id="performance">
+
+All work is on the CPU side of canvas 2D. The cost has four parts:
+
+- **The spring loop** goes with the cell count, thus with the viewport area divided by the cell area. It runs for all cells on each frame, also when nothing moves.
+- **The cursor loop** does not depend on the viewport. The bounding box of the 170 px circle is approximately 35 × 20 cells of 10 × 18 px.
+- **The blits** go with the number of lit cells, not with the cell count. A cell that has no rain, no heat, and no offset costs three comparisons. Each lit cell is one `drawImage` with its own `globalAlpha`.
+- **The pixel work** goes with the canvas area: one fill to clear the frame and one stretched `drawImage` for the vignette.
+
+Limits that the module applies:
+
+- The device pixel ratio is limited to 2 (`Math.min(dpr, 2)`). The value from `init` is kept, and `resize` ignores its `dpr` argument.
+- The canvas is opaque (`alpha: false`), so the browser does not blend it with the page below it.
+- There is no `fillText`, no `shadowBlur`, and no `fillStyle` change for glyphs in the frame loop. The atlas holds all 375 glyph images.
+- The vignette gradient is drawn in `resize`, not on each frame. The cursor glow makes one gradient object for each frame, which is the only allocation in `update`.
+- There is no element limit and no fallback. A narrow viewport gets smaller cells, so the count is low on a phone only because the viewport is small.
+
+<Measured
+  conditions="M-series Mac, Chromium, device pixel ratio 2. ms is the CPU time of update() only."
+  head={['viewport', 'build', 'fps', 'update ms', 'glyph springs']}
+  rows={[
+    ['1024 × 768', 'static page (before Next.js)', '59', '1.2', '4,576'],
+    ['1710 × 930', 'Next.js development', '60', '1.6', '9,116'],
+    ['1710 × 930', 'Next.js production', '60', '1.6', '9,116'],
+  ]}
+/>
+
+The larger viewport has two times the springs (172 × 53 cells, not 104 × 44), and the update time is 0.4 ms more.
+
+</Section>
+
+<Section id="references">
+
+- Wikipedia, [Hooke's law](https://en.wikipedia.org/wiki/Hooke%27s_law). The linear spring force `−k · x` that holds each glyph in its cell.
+- Wikipedia, [Semi-implicit Euler method](https://en.wikipedia.org/wiki/Semi-implicit_Euler_method). The integration scheme of the spring loop, and the comparison with the explicit method, in which the energy increases steadily.
+- MDN, [Optimizing canvas](https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API/Tutorial/Optimizing_canvas). The atlas method: draw repeated shapes one time to an offscreen canvas. It also recommends `alpha: false` and tells you to avoid `shadowBlur`.
+- MDN, [CanvasRenderingContext2D.drawImage()](https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/drawImage). The nine-argument form that copies a source rectangle to a destination rectangle.
+- Wikipedia, [Matrix digital rain](https://en.wikipedia.org/wiki/Matrix_digital_rain). The visual source: falling columns of half-width kana, Latin letters, and numerals.
+
+</Section>

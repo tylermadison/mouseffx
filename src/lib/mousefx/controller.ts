@@ -4,10 +4,14 @@ import type { Effect, EffectDef, Pointer, Stats } from './types';
 
 export interface ControllerOptions {
   container: HTMLElement;
-  onChange(def: EffectDef): void;
-  onStats(stats: Stats): void;
-  onError(message: string): void;
-  onToggleUi(): void;
+  // 'showcase' (default): keys, URL hash, and window.mousefx select the effect.
+  // 'fixed': hosts `effectId` only. No keys, no URL hash, no window.mousefx.
+  mode?: 'showcase' | 'fixed';
+  effectId?: string;
+  onChange?(def: EffectDef): void;
+  onStats?(stats: Stats): void;
+  onError?(message: string): void;
+  onToggleUi?(): void;
 }
 
 export interface Controller {
@@ -32,7 +36,8 @@ declare global {
 
 // Hosts one effect at a time in `container`. Owns the frame loop and all
 // global listeners. Browser only: call it from an effect hook, not during render.
-export function createController({ container, onChange, onStats, onError, onToggleUi }: ControllerOptions): Controller {
+export function createController({ container, mode = 'showcase', effectId, onChange, onStats, onError, onToggleUi }: ControllerOptions): Controller {
+  const fixed = mode === 'fixed';
   const listeners = new AbortController();
   const signal = listeners.signal;
   const pointer = createPointer();
@@ -42,6 +47,7 @@ export function createController({ container, onChange, onStats, onError, onTogg
   let width = innerWidth, height = innerHeight;
   let dpr = Math.min(devicePixelRatio || 1, 2);
 
+  // #region doc:select
   async function select(id: string) {
     const def = registry.find((d) => d.id === id) || registry[0];
     if (destroyed || loading || (currentDef && currentDef.id === def.id)) return;
@@ -56,30 +62,32 @@ export function createController({ container, onChange, onStats, onError, onTogg
       currentDef = def;
       mod.default.init({ container, pointer, width, height, dpr, reduced });
       current = mod.default;
-      location.hash = def.id;
-      onChange(def);
+      if (!fixed) location.hash = def.id;
+      onChange?.(def);
     } catch (err) {
       console.error(err);
-      onError(err instanceof Error ? err.message : String(err));
+      onError?.(err instanceof Error ? err.message : String(err));
     } finally {
       loading = false;
     }
   }
+  // #endregion doc:select
 
   function next(step = 1) {
+    if (fixed) return;
     const i = registry.findIndex((d) => d === currentDef);
     select(registry[(i + step + registry.length) % registry.length].id);
   }
 
-  addEventListener('keydown', (e) => {
+  if (!fixed) addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const d = registry.find((r) => r.key === e.key);
     if (d) { select(d.id); return; }
     if (e.key === ' ' || e.key === 'ArrowRight') { e.preventDefault(); next(1); }
     if (e.key === 'ArrowLeft') next(-1);
-    if (e.key === 'h') onToggleUi();
+    if (e.key === 'h') onToggleUi?.();
   }, { signal });
-  addEventListener('hashchange', () => select(location.hash.slice(1)), { signal });
+  if (!fixed) addEventListener('hashchange', () => select(location.hash.slice(1)), { signal });
 
   // ---------- resize ----------
   let resizeT: ReturnType<typeof setTimeout> | undefined;
@@ -91,6 +99,7 @@ export function createController({ container, onChange, onStats, onError, onTogg
     }, 60);
   }, { signal });
 
+  // #region doc:frame-loop
   // ---------- loop ----------
   let last = performance.now(), t = 0, fpsN = 0, hudT = 0, running = true, raf = 0;
   document.addEventListener('visibilitychange', () => {
@@ -113,17 +122,19 @@ export function createController({ container, onChange, onStats, onError, onTogg
       fpsN++;
       hudT += dt;
       if (hudT > 0.5) {
-        onStats({ fps: Math.round(fpsN / hudT), ms, count: current.count || null });
+        onStats?.({ fps: Math.round(fpsN / hudT), ms, count: current.count || null });
         fpsN = 0; hudT = 0;
       }
     }
   }
   raf = requestAnimationFrame(frame);
-  select(location.hash.slice(1) || 'gravity-well');
+  // #endregion doc:frame-loop
+  const start = select(fixed ? (effectId ?? 'gravity-well') : (location.hash.slice(1) || 'gravity-well'));
 
   const api: MouseFxApi = { select, next, registry, pointer, get current() { return current; }, get def() { return currentDef; } };
-  window.mousefx = api;
+  if (!fixed) window.mousefx = api;
 
+  // #region doc:teardown
   function destroy() {
     if (destroyed) return;
     destroyed = true;
@@ -136,6 +147,8 @@ export function createController({ container, onChange, onStats, onError, onTogg
     container.replaceChildren();
     if (window.mousefx === api) delete window.mousefx;
   }
+  // #endregion doc:teardown
 
-  return { select, next, destroy };
+  // In fixed mode the effect cannot change after the first selection.
+  return { select: fixed ? () => start : select, next, destroy };
 }

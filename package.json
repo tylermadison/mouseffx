@@ -4,24 +4,31 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/check-docs.mjs && next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "next typegen && tsc --noEmit",
+    "check:docs": "node scripts/check-docs.mjs"
   },
   "dependencies": {
+    "@mdx-js/loader": "^3.1.1",
+    "@mdx-js/react": "^3.1.1",
+    "@next/mdx": "^16.3.5",
     "next": "^16.3.5",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
+    "server-only": "^0.0.1",
     "three": "~0.160.0"
   },
   "devDependencies": {
+    "@types/mdx": "^2.0.14",
     "@types/node": "^26.6.2",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@types/three": "~0.160.0",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.3.5",
+    "shiki": "^4.4.3",
     "typescript": "^6.0.3"
   }
 }

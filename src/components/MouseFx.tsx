@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { createContext, useCallback, useContext, useRef, useState } from 'react';
 import { createController, type Controller } from '@/lib/mousefx/controller';
 import { registry } from '@/lib/mousefx/registry';
@@ -78,6 +79,7 @@ export function HeroText() {
     <>
       <h1 id="fx-title">{activeDef.title}</h1>
       <p className="sub" id="fx-desc">{error ? `error: ${error}` : activeDef.desc}</p>
+      <p className="how"><Link href={`/docs/${activeDef.id}`}>→ how it works</Link></p>
     </>
   );
 }

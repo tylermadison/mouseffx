@@ -1,4 +1,5 @@
 import type { NextConfig } from 'next';
+import createMDX from '@next/mdx';
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
@@ -6,6 +7,11 @@ const nextConfig: NextConfig = {
   agentRules: false,
   // Do not send the X-Powered-By: Next.js response header.
   poweredByHeader: false,
+  // The docs content is MDX.
+  pageExtensions: ['ts', 'tsx', 'md', 'mdx'],
 };
 
-export default nextConfig;
+// No remark or rehype plugins: the docs components do those jobs.
+const withMDX = createMDX({});
+
+export default withMDX(nextConfig);

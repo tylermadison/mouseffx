@@ -39,6 +39,7 @@ export function createPointer(): Pointer {
     p.t = t;
     const now = performance.now();
     const since = now - p.lastMove;
+    // #region doc:autopilot
     if (since > IDLE_MS) {
       // Autopilot: slow Lissajous drift around the centre of the screen.
       const k = Math.min(1, (since - IDLE_MS) / 2500); // ease in over 2.5s
@@ -52,6 +53,8 @@ export function createPointer(): Pointer {
     } else {
       p.x = p.rx; p.y = p.ry; p.idle = false;
     }
+    // #endregion doc:autopilot
+    // #region doc:velocity
     // velocity
     if (dt > 0) {
       let ivx = (p.x - lx) / dt, ivy = (p.y - ly) / dt;
@@ -64,6 +67,7 @@ export function createPointer(): Pointer {
     // smoothed position
     const s = 1 - Math.exp(-dt * 10);
     p.sx += (p.x - p.sx) * s; p.sy += (p.y - p.sy) * s;
+    // #endregion doc:velocity
   }
   return p;
 }

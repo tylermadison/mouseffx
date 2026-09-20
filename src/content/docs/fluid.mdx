@@ -1,0 +1,245 @@
+<Section id="overview">
+
+The screen is a tank of dark fluid. The cursor pushes the fluid and puts neon dye into it. The dye moves with the flow, rolls into vortices, and fades in approximately one second. A tone curve, a small light effect, and faint scanlines give the dye its neon look.
+
+The effect is a stable-fluids solver (Jos Stam, 1999) in raw WebGL2, with no library. The velocity, the pressure, and the dye are half-float textures. Each step of the solver is a fragment shader that draws one full-screen quad into a texture. The module makes nine programs from one vertex shader and the nine fragment shaders of the `FS` object: `clear`, `splat`, `advect`, `divergence`, `curl`, `vorticity`, `pressure`, `gradient`, `display`. The shaders use GLSL ES 1.00 syntax, which a WebGL2 context accepts.
+
+There are two grids. The simulation grid `SIM` holds the velocity, the curl, the divergence, and the pressure, with 160 cells on the short side of the canvas. The dye grid `DYE` has 1024 texels on the short side. The long side is the short side multiplied by the aspect ratio, so the cells are square.
+
+The element count in the statistics (`this.count`) is the number of simulation cells, `s.w × s.h`. It is not the number of dye texels. A 1710 × 930 viewport gives 294 × 160 = 47,040 cells. `initFBOs` calculates the count again after each resize.
+
+</Section>
+
+<Section id="interaction">
+
+- **Move.** When the pointer moves more than 0.5 px between two frames, the module adds splats. A splat is a gaussian spot that is added to the velocity texture and then to the dye texture. The velocity of the splat is the movement as a fraction of the viewport, multiplied by `FORCE = 6000`. The `y` sign is inverted, because texture coordinates go up.
+- **Move fast.** The module does not read `pointer.vx`, `pointer.vy`, or `pointer.speed`. It uses its own value `moved`, the distance in px since the last frame. A larger `moved` gives a larger force and brighter dye: the colour factor is `0.18 + 0.5 · min(1, moved / 40)`. A stroke longer than 12 px is divided into 2 to 4 splats along its line, so that a fast stroke is not a row of spots. Each of these splats adds the full force and the full colour.
+- **Colour.** `hue` increases by 0.05 for each second and by 0.0004 for each px of travel. One full turn through the five `PALETTE` colours thus takes 20 s at rest, or 2,500 px of movement.
+- **Hold the button.** While the button is down, the radius parameter of the stroke splats is multiplied by 2.2, which makes the spot approximately 1.5 times wider. A held button with no pointer movement adds nothing.
+- **Press edge.** On the frame where `pointer.down` becomes true, the module adds 14 splats at the cursor position, with a radius scale of 1.6. Their velocities point outward at 14 equal angles with a magnitude of 2,500 texels/s, and their colours go one time around the palette. All 14 splats are at the same point, so the 14 velocity vectors add to zero. Only a rounding error of the half-float texture stays: in a test, approximately 26 texels/s at the centre, against 2,494 texels/s after one such splat. The dye does add, to a bright spot that is almost white. The result is a white flash that the flow then moves away, not an outward blast.
+- **Idle.** After 2.5 s with no input, the shared pointer goes into autopilot. The module sees this as normal movement. The path is slow, so the splats are weak and dim.
+
+`init` does not take the `reduced` flag from its argument, so the module does not store it and `update` does not read it. Reduced motion does not change this effect. The module reads no URL parameter. There is one mobile branch: a viewport narrower than 800 px on a device with a touch screen (`navigator.maxTouchPoints > 0`) gets `SIM = 96` and `DYE = 512`. `init` makes this decision one time, and a resize does not make it again.
+
+</Section>
+
+<Section id="model">
+
+### Stable fluids
+
+The Navier-Stokes equations for an incompressible fluid have two parts: a momentum equation, and the condition that the divergence of the velocity is zero. Stam's method solves them in separate steps that are stable for all time steps: add forces, move the field along itself (advection), and remove the divergence (projection). This module has no viscosity step, because the bilinear filter of the advection already smooths the field.
+
+The velocity unit is simulation texels for each second. In the formulas below, `[L] [R] [T] [B]` are the left, right, top, and bottom neighbour cells, and `[C]` is the cell itself. The grid distance is 1.
+
+### Neighbour coordinates
+
+The vertex shader calculates the texture coordinates of the four neighbours, `vL vR vT vB`, from the uniform `texelSize`, and the GPU interpolates them as varyings. The offsets are the same for each fragment, so this work is done one time for each vertex and not one time for each fragment. All nine fragment shaders share the header `H` that declares the varyings.
+
+### Splat
+
+<Formula caption="point is the cursor in texture coordinates (0 to 1). aspect is canvas width / height. r is RADIUS · rScale, multiplied by aspect on a landscape canvas.">{`p      = (vUv − point) · (aspect, 1)
+target = target + exp(−(p · p) / r) · color`}</Formula>
+
+The multiplication of `p.x` by the aspect ratio makes the spot round on a canvas that is not square. The gaussian is 1/e at a distance of `√r` of the canvas height. With `RADIUS = 0.0022` on a 16:9 canvas, this is approximately 6% of the height. For the velocity target, `color` is `(fx, fy, 0)`. For the dye target, it comes from `color(h)`, which reads the five-entry `PALETTE` as a ring and mixes the two entries nearest to `h` linearly, so the hue moves with no steps.
+
+### Curl and vorticity confinement
+
+<Formula caption="CURL = 28 is the confinement strength. The clamp is a safety limit in texels/s.">{`curl = 0.5 · ((vy[R] − vy[L]) − (vx[T] − vx[B]))          ≈ ∂vy/∂x − ∂vx/∂y
+
+f    = 0.5 · (|curl[T]| − |curl[B]|,  |curl[R]| − |curl[L]|)
+f    = f / (|f| + 0.0001)
+f    = f · CURL · curl[C]
+f.y  = −f.y
+v    = clamp(v + f · dt, −1000, 1000)`}</Formula>
+
+The advection step loses small vortices, because each bilinear read is a small blur. Vorticity confinement puts that rotation back. Before the multiplication, `f` is the gradient of the curl magnitude, turned by 90° and made a unit vector. It points along the rim of a vortex. The multiplication by the signed curl selects the direction in which the vortex already turns, so the force makes each vortex turn faster.
+
+### Projection: divergence, pressure, gradient
+
+<Formula caption="ITERS = 20 Jacobi iterations. PRESSURE = 0.8 scales the pressure of the last frame.">{`div = 0.5 · ((vx[R] − vx[L]) + (vy[T] − vy[B]))
+      wall: a neighbour outside the texture counts as −v[C]
+
+p   ← 0.8 · p                                        (clear pass, one time)
+p   ← (p[L] + p[R] + p[B] + p[T] − div) / 4          (pressure pass, 20 times)
+
+v   = v − (p[R] − p[L],  p[T] − p[B])`}</Formula>
+
+The divergence tells how much fluid a cell makes or loses. The pressure is the solution of the Poisson equation `∇²p = div`, and the subtraction of its gradient from the velocity removes the divergence. This is the step that makes the fluid roll and not compress. The wall rule mirrors the velocity at the screen edge, so the pressure pushes the flow back from the walls.
+
+One Jacobi iteration moves information by one cell, so 20 iterations from zero cannot reach across 160 cells. The `clear` pass is the answer to this. It does not set the pressure to zero. It keeps 80% of the pressure of the last frame as the start value. The pressure changes little between frames, so the iterations start near the solution. The factor is less than 1 so that an old error fades and does not collect.
+
+Note that the gradient pass subtracts `p[R] − p[L]` and not `0.5 · (p[R] − p[L])`, which is two times the central-difference gradient. The same form is in the WebGL Fluid Simulation of Pavel Dobryakov (see the references). An incomplete Jacobi solve gives a pressure that is too small at large scales, and the larger step removes more of that divergence on each frame. The result is not an exact projection, but it is sufficient for a visual effect.
+
+### Advection and dissipation
+
+<Formula caption="Semi-Lagrangian advection. q is the velocity (VEL_DISS = 0.25) or the dye (DYE_DISS = 0.9). texelSize is that of the simulation grid in the two passes.">{`src = vUv − dt · v(vUv) · texelSize
+q   = q(src) / (1 + dissipation · dt)`}</Formula>
+
+The shader does not push a value forward to a new cell. It goes back along the velocity to the point where the value came from, and reads the field there with the bilinear filter of the GPU. The result is always a mix of old values, so the step is stable for all time steps. The velocity is advected by itself first, then the dye by the new velocity. The dye pass also uses the texel size of the simulation grid, because the velocity unit is simulation texels.
+
+The division is an implicit Euler step of an exponential decay. The half-life is `ln 2 / dissipation`: 0.77 s for the dye and 2.8 s for the velocity.
+
+### Display
+
+<Formula caption="The display pass reads the dye and its four neighbours. y is gl_FragCoord.y in device pixels.">{`dx  = |dye[R]| − |dye[L]|,   dy = |dye[T]| − |dye[B]|
+n   = normalize(dx, dy, 2 · |texelSize|)
+c   = dye · clamp(n.z + 0.7, 0.7, 1.0)
+c   = 1 − exp(−1.8 · c)
+c   = c + 0.6 · max(c − 0.6, 0)²
+out = c · (0.97 + 0.03 · sin(1.7 · y)) + (0.02, 0.02, 0.03)`}</Formula>
+
+The dye brightness is used as a height map: steep edges become darker by up to 30%. The exponential curve compresses the additive dye into the range 0 to 1 and keeps the colours saturated. The last line adds scanlines with a period of 3.7 device pixels and a dark blue floor.
+
+</Section>
+
+<Section id="pipeline">
+
+<Pipeline>
+  <Step title="Stroke splats" reads="pointer.x, pointer.y, velocity, dye" writes="velocity, dye">
+    Only when `moved > 0.5`. 1 to 4 splats. Each splat is two draws: one into `velocity.write` and one into `dye.write`, each followed by a swap.
+  </Step>
+  <Step title="Press burst" reads="pointer.down, wasDown, velocity, dye" writes="velocity, dye">
+    Only on the press edge. 14 splats at the cursor position.
+  </Step>
+  <Step title="curl" reads="velocity" writes="curl">
+    The scalar curl of the velocity, one value for each cell.
+  </Step>
+  <Step title="vorticity" reads="velocity, curl" writes="velocity">
+    Adds the confinement force `f · dt` and limits the velocity to ±1000 texels/s.
+  </Step>
+  <Step title="divergence" reads="velocity" writes="divergence">
+    Central differences, with the mirror rule at the walls.
+  </Step>
+  <Step title="clear" reads="pressure" writes="pressure">
+    Multiplies the pressure of the last frame by 0.8.
+  </Step>
+  <Step title="pressure, 20 times" reads="divergence, pressure" writes="pressure">
+    One Jacobi iteration for each draw. The pair of pressure textures swaps after each draw.
+  </Step>
+  <Step title="gradient" reads="pressure, velocity" writes="velocity">
+    Subtracts the pressure gradient. The velocity now has much less divergence.
+  </Step>
+  <Step title="advect the velocity" reads="velocity" writes="velocity">
+    The velocity texture is the velocity input and also the source input. Dissipation 0.25.
+  </Step>
+  <Step title="advect the dye" reads="velocity, dye" writes="dye">
+    The same program with the dye as the source. Dissipation 0.9. This is the only solver pass on the dye grid.
+  </Step>
+  <Step title="display" reads="dye" writes="canvas">
+    `blit(null)` draws into the default framebuffer with the viewport of the full canvas.
+  </Step>
+</Pipeline>
+
+Before the first step, `update` disables blending and limits the time step of the solver passes: `sdt = min(dt, 1 / 40)`.
+
+The header comment of the module gives the same order but does not list the `clear` pass. The projection runs before the advection, so the field that moves the dye has low divergence.
+
+</Section>
+
+<Section id="code">
+
+### Vertex shader and shared header
+
+Look at the four neighbour varyings. `texelSize` is a uniform, so the same vertex shader serves the simulation grid and the dye grid. `H` is put in front of each fragment shader.
+
+<Excerpt file="effects/fluid.js" region="neighbour-varyings" lang="js" page="fluid" />
+
+### Field shaders
+
+These are the seven shaders of the solver. Compare each `main` with its formula in the model section. In `divergence`, the four `if` statements are the wall rule. In `gradient`, there is no factor 0.5.
+
+<Excerpt file="effects/fluid.js" region="field-shaders" lang="js" page="fluid" />
+
+### Framebuffers and texture formats
+
+A shader cannot read the texture that it writes. `dfbo` thus makes two equal targets, `read` and `write`, and `swap()` exchanges them after each draw. `fbo` makes one texture with its framebuffer. Its `attach(id)` helper binds the texture to a texture unit and returns the unit number for the sampler uniform.
+
+`initFBOs` gives each field the smallest format that holds it: `RGBA16F` for the dye, `RG16F` for the velocity, `R16F` for the scalars. The dye and the velocity use `LINEAR`, because the advection depends on bilinear reads. The scalar fields use `NEAREST`, because the shaders read them only at cell centres. The divergence and the curl are single targets, because no pass reads and writes them at the same time. A render to a half-float texture needs the extension `EXT_color_buffer_float`.
+
+<Excerpt file="effects/fluid.js" region="framebuffers" lang="js" page="fluid" />
+
+### Colour and splat
+
+`color` mixes two neighbour palette entries, and `k` scales the brightness. `splat` uses one program for two targets and changes only the `uTarget` and `color` uniforms between the two draws. The aspect correction of the radius is on the third line of `splat`.
+
+<Excerpt file="effects/fluid.js" region="splat" lang="js" page="fluid" />
+
+### Pointer input
+
+In the sub-step loop, `k` goes from `1 / steps` to 1, and the splat position goes from near the last pointer position to the current position. The burst loop calls `splat` 14 times with the same `nx, ny`, which is the reason that the velocities cancel.
+
+<Excerpt file="effects/fluid.js" region="input" lang="js" page="fluid" />
+
+### The solver passes
+
+Each pass has the same pattern: `use` the program, set `texelSize`, attach the input textures, `blit` into the target, swap if the target is a pair. The pressure loop sets only the `uPressure` sampler again on each iteration, because the read texture changes with each swap.
+
+<Excerpt file="effects/fluid.js" region="solve" lang="js" page="fluid" />
+
+### Resize and dispose
+
+`resize` sets the canvas size, deletes all textures and framebuffers, and calls `initFBOs`. The new textures are empty, so a resize removes all dye and all motion. `dispose` deletes the nine programs and the vertex buffer, calls `loseContext()` of the `WEBGL_lose_context` extension, and removes the canvas. A browser permits only a limited number of live WebGL contexts, and a context stays alive until the garbage collector finds it. The explicit loss releases the GPU memory immediately when the visitor changes to a different effect.
+
+</Section>
+
+<Section id="constants">
+
+<ParamTable>
+  <Param name="simulation grid" literal="SIM: mobile ? 96 : 160" controls="Cells on the short side of the velocity, curl, divergence, and pressure textures." why="26 of the 28 passes of a frame run on this grid, so its cost is multiplied 26 times. The velocity field is smooth and does not need more cells. A larger grid also makes the projection less complete, because 20 Jacobi iterations cover a smaller part of it." />
+  <Param name="dye grid" literal="DYE: mobile ? 512 : 1024" controls="Texels on the short side of the dye texture." why="The dye is the field that the eye sees, so on a desktop it has 6.4 times the linear resolution of the velocity. Only one solver pass runs on it, so the high resolution is cheap. A lower value makes thin dye lines soft. A higher value costs memory: the dye is a pair of RGBA16F textures with 8 bytes for each texel." />
+  <Param name="pressure iterations" literal="ITERS: 20" controls="Jacobi iterations for each frame." why="Each iteration moves pressure information by one cell. Fewer iterations leave divergence in the field, and the dye then grows and shrinks like a gas. More iterations cost one SIM pass each, and the pressure loop is already 20 of the 26 SIM passes." />
+  <Param name="pressure carry-over" literal="PRESSURE: 0.8" controls="Part of the pressure of the last frame that is the start value of the Jacobi loop." why="With 0, each frame starts from zero and 20 iterations cannot make a pressure field across 160 cells. With 1, an error of an old frame does not fade. 0.8 keeps the good start value and removes old errors in a few frames." />
+  <Param name="vorticity confinement" literal="CURL: 28" controls="Strength of the confinement force, the factor of the signed curl." why="With 0, the bilinear advection removes small vortices and the fluid moves like syrup. A value that is too high amplifies noise in the curl field, and the flow breaks into many small whirls that shake. The clamp at ±1000 texels/s in the shader is the guard for that case." />
+  <Param name="dye dissipation" literal="DYE_DISS: 0.9" controls="Decay rate of the dye in 1/s. The half-life is 0.77 s." why="Splats are additive. With a lower rate, the dye collects faster than it fades, and the tone curve makes the full screen white. With a higher rate, the dye is gone before the vortices can pull it into thin lines." />
+  <Param name="velocity dissipation" literal="VEL_DISS: 0.25" controls="Decay rate of the velocity in 1/s. The half-life is 2.8 s." why="The flow must live longer than the dye, so that the dye moves during all of its life. With 0, the energy of each stroke stays in the tank, because the walls reflect the flow. A high value stops the fluid immediately, and the dye then looks like paint on a surface." />
+  <Param name="pointer force" literal="FORCE: 6000" controls="Factor from pointer movement (as a fraction of the viewport, for each frame) to velocity in texels/s." why="A movement of 1% of the width adds 60 texels/s at the centre of the splat. With a lower value, the dye stays where the cursor puts it. With a higher value, fast strokes reach the ±1000 clamp, and the advection then reads from a point that is many cells away, which loses detail." />
+  <Param name="splat radius" literal="RADIUS: 0.0022" controls="The divisor r in the gaussian. The 1/e distance is √r of the canvas height." why="Before the aspect correction, √0.0022 is 4.7% of the height, which is 7.5 cells of the 160-cell grid. A much smaller spot comes near to one cell, and the grid cannot hold a smooth velocity impulse of that size. A much larger spot is a wide soft brush that makes no thin lines." />
+  <Param name="stroke sub-steps" literal="const steps = Math.min(4, Math.ceil(moved / 12));" controls="Number of splats along one stroke: one for each 12 px, a maximum of 4." why="One splat for each frame makes a fast stroke a row of separate spots. The maximum of 4 limits the cost to 8 draws. Each sub-step adds the full force and colour, so a fast stroke is also stronger and brighter." />
+  <Param name="pixel ratio limit" literal="this.pr = Math.min(dpr, 1.5);" controls="Largest device pixel ratio of the canvas. The controller already limits the value to 2." why="Only the display pass depends on the canvas size. The dye has 1024 texels on the short side, so a canvas with more pixels than that shows no more detail. A ratio of 2 has 1.78 times the pixels of 1.5." />
+  <Param name="step limit" literal="const sdt = Math.min(dt, 1 / 40);" controls="Largest time step of the solver, 25 ms." why="The advection is stable for all steps, but the distance of its backward read and the confinement force increase with dt. One long frame would throw the dye far from its position in one step. Below 40 frames for each second, the fluid becomes slower and stays smooth." />
+</ParamTable>
+
+</Section>
+
+<Section id="performance">
+
+All field work is on the GPU. On the CPU, `update()` only sets uniforms and sends draw calls: 28 for a frame with no input, and 2 more for each splat, of which there are at most 18 on one frame. This is the reason that the measured CPU time is near zero. The GPU time is not in the measured values.
+
+The GPU cost has three parts:
+
+- **Solver passes.** 26 passes on the simulation grid. The cell count depends only on `SIM` and the aspect ratio, not on the viewport size. At 47,040 cells, this is approximately 1.2 million fragments for each frame.
+- **Dye advection.** One pass on the dye grid: 1883 × 1024, approximately 1.9 million fragments, for a 1710 × 930 viewport.
+- **Display.** One pass on the canvas with five texture reads for each pixel. This is the only part that scales with the viewport and the pixel ratio: 2565 × 1395, approximately 3.6 million pixels, for a 1710 × 930 viewport.
+
+Limits that the module applies:
+
+- The device pixel ratio is limited to 1.5. On the display of the measurements below (ratio 2), the canvas thus has 1.5 device pixels for each CSS pixel.
+- The grids have a fixed size on the short side, so a large monitor does not make the solver slower.
+- The mobile branch uses `SIM = 96` and `DYE = 512`: 36% of the cells and 25% of the dye texels.
+- All textures are half-float. They use half the memory of 32-bit float textures, and WebGL2 can filter them linearly with no extension.
+- The context has no alpha channel, no antialiasing, no depth buffer, and no stencil buffer.
+- There is no fallback. If WebGL2 or `EXT_color_buffer_float` is not available, `init` throws an error, and the controller reports it.
+
+<Measured
+  conditions="M-series Mac, Chromium, device pixel ratio 2. ms is the CPU time of update() only. GPU time is not included."
+  head={['viewport', 'build', 'fps', 'update ms', 'simulation cells']}
+  rows={[
+    ['1024 × 768', 'static page (before Next.js)', '60', '0.2', '34,080 (dye 1024)'],
+    ['1710 × 930', 'Next.js development', '60', '0.1', '47,040'],
+    ['1710 × 930', 'Next.js production', '60', '0.0', '47,040'],
+  ]}
+/>
+
+The cell count is different in the first row because the aspect ratio is different: 213 × 160 against 294 × 160.
+
+</Section>
+
+<Section id="references">
+
+- Jos Stam, [Stable Fluids](https://www.dgp.toronto.edu/public_user/stam/reality/Research/pdf/ns.pdf) (SIGGRAPH 1999). The source of the method: semi-Lagrangian advection and projection.
+- Jos Stam, [Real-Time Fluid Dynamics for Games](https://www.dgp.toronto.edu/public_user/stam/reality/Research/pdf/GDC03.pdf) (GDC 2003). A shorter description of the same solver, with full C code.
+- Mark J. Harris, [Fast Fluid Dynamics Simulation on the GPU](https://developer.nvidia.com/gpugems/gpugems/part-vi-beyond-triangles/chapter-38-fast-fluid-dynamics-simulation-gpu) (GPU Gems, chapter 38). The method as fragment shader passes, with vorticity confinement.
+- Pavel Dobryakov, [WebGL Fluid Simulation](https://github.com/PavelDoGreat/WebGL-Fluid-Simulation). A WebGL solver with the same pass structure, the same pressure carry-over of 0.8, and the same gradient form. The repository has a link to the live demonstration.
+- Wikipedia, [Vorticity confinement](https://en.wikipedia.org/wiki/Vorticity_confinement). The derivation of the confinement force.
+
+</Section>

@@ -9,6 +9,7 @@ const HEX = '0123456789ABCDEF';
 const ATLAS = DIR + HOT + HEX + '·';
 const TINTS = ['#0e4a22', '#39ff14', '#c8ffd4', '#ffb000', '#ffffff'];
 
+// #region doc:value-noise
 function vnoise(x, y, seed) {
   // 2D value noise with a cheap integer hash
   const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
@@ -17,6 +18,7 @@ function vnoise(x, y, seed) {
   const a = h(xi, yi), b = h(xi + 1, yi), c = h(xi, yi + 1), d = h(xi + 1, yi + 1);
   return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
 }
+// #endregion doc:value-noise
 
 export default {
   count: 0,
@@ -34,6 +36,7 @@ export default {
     this.resize(width, height, dpr);
   },
 
+  // #region doc:atlas
   buildAtlas() {
     const fs = this.fs, pr = this.pr;
     this.cw = Math.round(fs * 0.7); this.ch = Math.round(fs * 1.2);
@@ -49,6 +52,7 @@ export default {
     });
     this.atlas = a; this.acw = cw; this.ach = ch;
   },
+  // #endregion doc:atlas
 
   resize(w, h, dpr) {
     this.width = w; this.height = h;
@@ -60,6 +64,7 @@ export default {
     this.fx = new Float32Array(n); this.fy = new Float32Array(n);
   },
 
+  // #region doc:field
   // field vector at (x,y) in px → writes to out[0..1]
   field(x, y, t, out) {
     const p = this.pointer;
@@ -77,6 +82,7 @@ export default {
     vx += p.vx * 0.0025 * fall; vy += p.vy * 0.0025 * fall;              // wind from cursor motion
     out[0] = vx; out[1] = vy;
   },
+  // #endregion doc:field
 
   update(dt, t) {
     const { ctx, cols, rows, cw, ch, pointer: p } = this;
@@ -91,6 +97,7 @@ export default {
       this.fx[i] = v[0]; this.fy[i] = v[1];
       if (this.heat[i] > 0) this.heat[i] = Math.max(0, this.heat[i] - sdt * 2.6);
     }
+    // #region doc:packets
     // packets ride the field
     for (let i = 0; i < this.P; i++) {
       let c = (this.px[i] / cw) | 0, r = (this.py[i] / ch) | 0;
@@ -103,12 +110,14 @@ export default {
       this.heat[k] = 1; this.hchar[k] = this.pc[i];
       if (Math.random() < 0.05) this.pc[i] = (Math.random() * 16) | 0;
     }
+    // #endregion doc:packets
 
     // draw
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 1; ctx.fillStyle = '#050508'; ctx.fillRect(0, 0, w, h);
     ctx.globalCompositeOperation = 'lighter';
     const atlas = this.atlas, acw = this.acw, ach = this.ach;
+    // #region doc:glyph-select
     for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
       const i = r * cols + c;
       const vx = this.fx[i], vy = this.fy[i], mag = Math.sqrt(vx * vx + vy * vy);
@@ -127,6 +136,7 @@ export default {
       ctx.globalAlpha = alpha;
       ctx.drawImage(atlas, glyph * acw, tint * ach, acw, ach, c * cw, r * ch, cw, ch);
     }
+    // #endregion doc:glyph-select
     // terminal readout at the cursor
     ctx.globalAlpha = 0.9; ctx.fillStyle = '#ffb000';
     ctx.font = `${this.fs}px "JetBrains Mono", Menlo, Consolas, monospace`; ctx.textBaseline = 'top';
